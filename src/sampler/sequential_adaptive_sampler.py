@@ -6,6 +6,7 @@ from jaxtyping import Float, Int64, Bool, Int32
 import torch
 from torch import Tensor
 from torch.nn.functional import avg_pool2d, interpolate
+from tqdm import tqdm
 
 from src.type_extensions import SamplingOutput
 from ..model import Wrapper
@@ -19,6 +20,7 @@ class SequentialAdaptiveSamplerCfg(SamplerCfg):
     overlap: float = 0.1
     epsilon: float = 1e-6
     reverse_certainty: bool = False # If True, the top_k patches with the highest sigma_theta are selected
+    progress_bar: bool = False      # tqdm over denoising steps
 
 
 class SequentialAdaptiveSampler(Sampler[SequentialAdaptiveSamplerCfg]):
@@ -177,7 +179,10 @@ class SequentialAdaptiveSampler(Sampler[SequentialAdaptiveSamplerCfg]):
         if c_cat is not None:
             c_cat = c_cat.unsqueeze(1)
 
-        for step_id in range(self.cfg.max_steps):
+        step_iterator = range(self.cfg.max_steps)
+        if self.cfg.progress_bar:
+            step_iterator = tqdm(step_iterator, desc="sampling steps", leave=False)
+        for step_id in step_iterator:
             t = self.get_timestep_from_schedule(scheduling_matrix, step_id, image_shape)
             
             z_t = z_t.unsqueeze(1)
@@ -276,6 +281,9 @@ class SequentialAdaptiveSampler(Sampler[SequentialAdaptiveSamplerCfg]):
 
             if t_next.max() <= self.cfg.epsilon:
                 break  # No more patches to predict
+
+        if self.cfg.progress_bar:
+            step_iterator.close()
 
         res: SamplingOutput = {"sample": z_t}
 

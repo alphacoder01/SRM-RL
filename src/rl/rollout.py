@@ -7,6 +7,7 @@ import torch
 from torch import Tensor
 from torch.distributions import Categorical
 from torch.nn.functional import avg_pool2d
+from tqdm import tqdm
 
 from ..model import Wrapper
 from ..sampler.sequential_adaptive_sampler import (
@@ -157,7 +158,10 @@ class TrajectoryRecordingSampler(SequentialAdaptiveSampler):
         order_patch, order_unknown, order_old_logp = [], [], []
 
         num_steps_done = 0
-        for step_id in range(self.cfg.max_steps):
+        step_iterator = range(self.cfg.max_steps)
+        if self.cfg.progress_bar:
+            step_iterator = tqdm(step_iterator, desc="rollout steps", leave=False)
+        for step_id in step_iterator:
             # snapshot before the in-place block update below: exactly what the
             # forward pass sees (the update is a no-op on this row, but explicit
             # beats relying on that invariant, cf. Decisions.md D6)
@@ -253,6 +257,9 @@ class TrajectoryRecordingSampler(SequentialAdaptiveSampler):
             num_steps_done = step_id + 1
             if t_next.max() <= eps_threshold:
                 break
+
+        if self.cfg.progress_bar:
+            step_iterator.close()
 
         return RolloutBatch(
             z_seq=torch.stack(z_seq),

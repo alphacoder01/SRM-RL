@@ -21,6 +21,7 @@ class RolloutCfg:
     temperature: float = 1.0
     storage_device: str = "cpu"
     storage_dtype: str = "float32"
+    progress_bar: bool = False              # tqdm over rollout denoising steps
 
 
 @dataclass
@@ -66,6 +67,7 @@ class RLEvalCfg:
     overlap: float = 0.0
     alpha: float = 1.0
     use_ema: bool = True
+    progress_bar: bool = True               # tqdm over eval batches and denoising steps
 
 
 @dataclass

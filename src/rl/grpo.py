@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from torch import Tensor
 from torch.nn.functional import avg_pool2d, interpolate, mse_loss
+from tqdm import tqdm
 
 from ..dataset import Dataset
 from ..model import Wrapper
@@ -83,6 +84,7 @@ class GRPOTrainer:
                 ),
                 storage_device=self.rl.rollout.storage_device,
                 storage_dtype=self.rl.rollout.storage_dtype,
+                progress_bar=self.rl.rollout.progress_bar,
             ),
             patch_size=model.cfg.patch_size,
             patch_grid_shape=model.patch_grid_size,
@@ -95,6 +97,7 @@ class GRPOTrainer:
                 use_ema=self.rl.eval.use_ema,
                 top_k=self.rl.eval.top_k,
                 overlap=self.rl.eval.overlap,
+                progress_bar=self.rl.eval.progress_bar,
             ),
             patch_size=model.cfg.patch_size,
             patch_grid_shape=model.patch_grid_size,
@@ -415,7 +418,14 @@ class GRPOTrainer:
         ev = self.rl.eval
         lo, hi = ev.num_fill
         all_scores = []
-        for start in range(0, ev.num_samples, ev.batch_size):
+        batch_starts = range(0, ev.num_samples, ev.batch_size)
+        if ev.progress_bar:
+            batch_starts = tqdm(
+                batch_starts,
+                desc=f"eval ({ev.num_samples} samples, {ev.max_steps} steps)",
+                unit="batch",
+            )
+        for start in batch_starts:
             indices = list(range(start, min(start + ev.batch_size, ev.num_samples)))
             num_given = [
                 int(np.random.default_rng(idx).integers(lo, hi + 1)) for idx in indices
@@ -434,6 +444,9 @@ class GRPOTrainer:
             ])
             out = self.eval_sampler(self.model, z_t=z_init, mask=mask, masked=masked)
             all_scores.append(self.reward_fn(out["sample"]))
+            if ev.progress_bar:
+                acc = torch.cat([s["accuracy"] for s in all_scores])
+                batch_starts.set_postfix(acc=f"{acc.mean().item():.3f}", n=acc.numel())
         return {
             key: torch.cat([s[key] for s in all_scores]).mean().item()
             for key in all_scores[0]

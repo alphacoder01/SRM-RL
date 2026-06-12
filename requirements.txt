@@ -12,5 +12,6 @@ pandas
 torch
 torchaudio
 torchvision
+tqdm
 wandb
 wandb[media]
