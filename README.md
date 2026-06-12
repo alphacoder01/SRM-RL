@@ -79,6 +79,29 @@ For example, after downloading our datasets and checkpoints, run the following c
 bash test.sh ms1000_28 paper ms_hard_seq_adaptive000
 ```
 
+### RL Fine-Tuning (GRPO)
+
+This fork adds Flow-GRPO-style RL fine-tuning of a pretrained SRM on the MNIST Sudoku task, using the classifier-based Sudoku verifier as reward. All design decisions are documented in [`Decisions.md`](Decisions.md); the implementation lives in `src/rl/`.
+
+After pretraining (or downloading) an SRM checkpoint, run:
+
+```bash
+bash train_rl.sh ms1000_28 outputs/ms1000_28/paper/checkpoints/last.ckpt [optional run id] [hydra overrides]
+```
+
+Outputs (checkpoints + `metrics.jsonl`) go to `outputs_rl/[experiment]/[id]`. The fine-tuned policy is saved as `checkpoints/policy_latest.pth`, which the existing test pipeline can evaluate via:
+
+```bash
+bash test.sh ms1000_28 paper ms_hard_seq_adaptive000 checkpointing.load=outputs_rl/ms1000_28/[id]/checkpoints/policy_latest.pth
+```
+
+Key configuration (see the `rl:` section of `config/rl_main.yaml`):
+* `rl.rollout.*` — group size, masking difficulty, reduced rollout step budget (denoising reduction). Before long runs, check how much accuracy the reduced budget costs the frozen baseline and adjust `max_steps`.
+* `rl.update.*` — PPO clip range, KL coefficient to the frozen reference, timestep subsampling fraction, and the σ-NLL auxiliary weight that keeps the uncertainty head (which drives generation order) calibrated during RL.
+* `rl.order_policy.enabled=true` — Stage 2: turns the greedy lowest-uncertainty ordering into a stochastic categorical policy whose decisions are optimized by GRPO directly.
+
+A CPU smoke test of the full RL pipeline (no datasets/checkpoints needed) is available via `DEBUG=false python -m tests.rl_smoke_test`.
+
 ## 📘 Citation
 When using this code or the spatialreasoners framework in your project, consider citing our works as follows:
 ```bibtex

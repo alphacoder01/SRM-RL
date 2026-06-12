@@ -1,0 +1,147 @@
+# Root config for RL fine-tuning (src/main_rl.py).
+# Superset of main.yaml so that `+experiment=...` composes identically and the
+# model configuration is guaranteed to match the pretrained checkpoint.
+defaults:
+  - dataset: even_pixels
+  - model/denoiser: unet_32
+  - model/flow: rectified
+  - model/time_sampler: mean_beta
+  - optimizer: default
+
+conditioning:
+  label: false
+  mask: false
+
+patch_size: 1
+
+model:
+  flow:
+    variance: learned_range
+  learn_sigma: true
+  time_interval: [0.0, 1.0]
+  ema: true
+
+loss:
+  sigma:
+    weight: 0.01
+
+train:
+  step_offset: 0
+
+validation: {}
+
+test: {}
+
+hydra:
+  run:
+    dir: ""   # override!
+
+wandb:
+  project: srm
+  entity: placeholder
+  mode: online
+  activated: false
+
+mode: train
+
+data_loader:
+  train:
+    num_workers: 16
+    persistent_workers: true
+    batch_size: 128
+    seed: null
+  test:
+    num_workers: 4
+    persistent_workers: false
+    batch_size: 16
+    seed: null
+  val:
+    num_workers: 16
+    persistent_workers: true
+    batch_size: 16
+    seed: null
+
+checkpointing:
+  load: null
+  resume: false
+  save: true
+  every_n_train_steps: 5000
+  every_n_train_steps_persistently: 50_000
+  save_top_k: null
+
+mnist_classifier: datasets/mnist_sudoku/mnist_classifier.pth
+seed: null
+
+trainer:
+  max_epochs: -1
+  max_steps: 250_001
+  val_check_interval: 1000
+  log_every_n_steps: 50
+  task_steps: null
+  accumulate_grad_batches: 1
+  precision: bf16-mixed
+  num_nodes: 1
+  validate: true
+  profile: false
+  detect_anomaly: false
+
+torch:
+  float32_matmul_precision: high
+  cudnn_benchmark: false
+
+# ------------------------------------------------------------------ RL section
+rl:
+  # e.g. outputs/ms1000_28/paper/checkpoints/last.ckpt (.ckpt or .pth)
+  pretrained_checkpoint: ???
+  num_iterations: 1000
+  checkpoint_every: 25
+
+  rollout:
+    num_conditions: 4
+    group_size: 8
+    num_fill: [0, 26]       # hard difficulty
+    max_steps: 243          # denoising reduction for training rollouts
+    top_k: 1
+    overlap: 0.0
+    alpha: 1.0              # stochastic sampling required for GRPO
+    temperature: 1.0
+    storage_device: cpu
+    storage_dtype: float32
+
+  update:
+    lr: 1.e-5
+    weight_decay: 0.0
+    inner_epochs: 1
+    step_fraction: 0.25
+    include_order_steps: true
+    update_batch_size: 8
+    clip_range: 1.e-2
+    kl_beta: 0.01
+    noise_aware_weighting: false
+    adv_eps: 1.e-4
+    skip_degenerate_groups: true
+    grad_clip: 1.0
+    sigma_aux_weight: 0.01
+    flow_anchor_weight: 0.0
+    aux_batch_size: 8
+    aux_batches_per_epoch: 1
+
+  order_policy:             # Stage 2 (Decisions.md D3); off by default
+    enabled: false
+    temperature: 0.1
+    loss_weight: 1.0
+
+  reward:
+    accuracy_bonus: 1.0
+    distance_weight: 0.1
+
+  eval:
+    every: 25
+    num_samples: 64
+    batch_size: 16
+    num_fill: [0, 26]
+    max_steps: 1000         # full budget at eval time
+    top_k: 1
+    overlap: 0.0
+    alpha: 1.0
+    use_ema: true
