@@ -214,3 +214,33 @@ consistency (recomputed log-probs match rollout-time log-probs for unchanged wei
 group advantages, one full GRPO update step (Stage 1 and Stage 2), and aux losses.
 Full-scale training requires GPUs and the released datasets/checkpoints, which are
 not available in this development environment.
+
+## D16. Post-mortem of the first training run: gradient accumulation is mandatory
+
+**Observation (first 60 iterations, default config):** train-rollout accuracy
+collapsed 0.55 → ~0.0, distance 2.7 → 20+, KL to the reference grew linearly
+0.002 → 0.043, and the supervised σ-NLL on real data rose steadily — the policy
+walked off the pretrained manifold. Eval accuracy looked stable only because it
+uses the slow EMA (decay 0.9999), which lags the degrading raw policy.
+
+**Root cause:** the original update loop took an optimizer step on *every*
+8-pair microbatch — ~218 sequential AdamW steps per rollout batch, all driven by
+advantages from only 4 conditions. AdamW's preconditioning normalizes gradient
+magnitude, so even near-zero noisy gradients move parameters by ~lr per step;
+hundreds of such steps per iteration are a noise-driven random walk, and
+within-epoch off-policy drift (mean ratio settling at ~0.998) compounds it.
+Flow-GRPO-style training takes ~1–4 optimizer steps per rollout round.
+
+**Fixes:**
+1. Gradient accumulation across microbatches: `update.optimizer_steps_per_epoch`
+   (default 4) controls how many optimizer steps each inner epoch takes; each
+   step now averages ~400+ pairs instead of 8.
+2. `rollout.num_conditions` default 4 → 8: with few conditions, all pairs in a
+   batch share a handful of advantage values; doubling conditions doubles the
+   effective sample size of the gradient.
+3. `update.kl_beta` 0.01 → 0.04 and `update.flow_anchor_weight` 0.0 → 0.1:
+   the observed drift was exactly the failure mode these terms guard against
+   (D9/D12); the run showed the previous defaults were too weak.
+
+Degraded runs should be restarted from the pretrained checkpoint with a fresh
+run id (resuming loads the contaminated weights and EMA from `rl_state.pt`).

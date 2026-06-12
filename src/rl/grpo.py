@@ -354,14 +354,14 @@ class GRPOTrainer:
             stats["flow_anchor"].append(anchor.detach().item())
         return loss
 
-    def _optimizer_step(self, loss: Tensor) -> None:
-        self.optimizer.zero_grad(set_to_none=True)
-        loss.backward()
+    def _apply_optimizer_step(self) -> None:
+        """Clip + step + EMA update on already-accumulated gradients."""
         if self.rl.update.grad_clip is not None:
             torch.nn.utils.clip_grad_norm_(
                 self.model.denoiser.parameters(), self.rl.update.grad_clip
             )
         self.optimizer.step()
+        self.optimizer.zero_grad(set_to_none=True)
         if self.model.ema_denoiser is not None:
             self.model.ema_denoiser.update_parameters(self.model.denoiser)
 
@@ -395,20 +395,37 @@ class GRPOTrainer:
             "ratio", "clip_frac", "pg_loss", "kl", "order_loss", "sigma_aux", "flow_anchor"
         )}
         num_pairs = 0
+        num_optimizer_steps = 0
         for _ in range(upd.inner_epochs):
             b_idx, s_idx = self._build_pairs(roll)
             num_pairs += b_idx.numel()
             perm = torch.randperm(b_idx.numel())
             b_idx, s_idx = b_idx[perm], s_idx[perm]
-            for start in range(0, b_idx.numel(), upd.update_batch_size):
+            # Accumulate microbatch gradients into few optimizer steps per epoch:
+            # AdamW normalizes gradient scale, so taking a step per microbatch
+            # amounts to hundreds of noise-driven steps per rollout batch and
+            # makes the policy drift off the pretrained manifold (Decisions.md D16)
+            num_microbatches = ceil(b_idx.numel() / upd.update_batch_size)
+            accumulate = max(1, ceil(num_microbatches / upd.optimizer_steps_per_epoch))
+            self.optimizer.zero_grad(set_to_none=True)
+            accumulated = 0
+            for i, start in enumerate(range(0, b_idx.numel(), upd.update_batch_size)):
                 end = start + upd.update_batch_size
                 loss = self._grpo_microbatch_loss(roll, b_idx[start:end], s_idx[start:end], stats)
-                self._optimizer_step(loss)
+                (loss / accumulate).backward()
+                accumulated += 1
+                if accumulated == accumulate or i == num_microbatches - 1:
+                    self._apply_optimizer_step()
+                    num_optimizer_steps += 1
+                    accumulated = 0
             aux = self._aux_loss(stats)
             if aux is not None:
-                self._optimizer_step(aux)
+                aux.backward()
+                self._apply_optimizer_step()
+                num_optimizer_steps += 1
         result = {k: float(np.mean(v)) for k, v in stats.items() if v}
         result["num_pairs"] = num_pairs
+        result["optimizer_steps"] = num_optimizer_steps
         return result
 
     # ------------------------------------------------------------ evaluation

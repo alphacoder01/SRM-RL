@@ -8,8 +8,9 @@ from .reward import SudokuRewardCfg
 
 @dataclass
 class RolloutCfg:
-    # conditions (masked Sudokus) per iteration; each gets group_size rollouts
-    num_conditions: int = 4
+    # conditions (masked Sudokus) per iteration; each gets group_size rollouts.
+    # Too few conditions -> highly correlated advantages -> noisy gradients
+    num_conditions: int = 8
     group_size: int = 8                     # G
     # number of cells given to the model: [lo, hi] inclusive; [0, 26] = hard
     num_fill: list[int] = field(default_factory=lambda: [0, 26])
@@ -41,17 +42,22 @@ class UpdateCfg:
     step_fraction: float = 0.25
     # force order-decision steps into the subsample (relevant for Stage 2)
     include_order_steps: bool = True
-    # (trajectory, step) pairs per optimizer step
+    # (trajectory, step) pairs per forward/backward microbatch
     update_batch_size: int = 8
+    # gradients are accumulated so each inner epoch takes only this many
+    # optimizer steps; stepping per microbatch makes AdamW take hundreds of
+    # noise-driven steps per rollout batch and the policy drifts off the
+    # pretrained manifold (cf. Decisions.md D16)
+    optimizer_steps_per_epoch: int = 4
     clip_range: float = 1.e-2               # calibrated for per-scalar mean log-probs
-    kl_beta: float = 0.01                   # 0 disables the reference forward pass
+    kl_beta: float = 0.04                   # 0 disables the reference forward pass
     noise_aware_weighting: bool = False
     adv_eps: float = 1.e-4
     skip_degenerate_groups: bool = True
     grad_clip: float = 1.0
     # auxiliary supervised losses on dataset batches (cf. Decisions.md D3/D12/D13)
     sigma_aux_weight: float = 0.01          # matches pretraining loss.sigma.weight
-    flow_anchor_weight: float = 0.0
+    flow_anchor_weight: float = 0.1
     aux_batch_size: int = 8
     aux_batches_per_epoch: int = 1
 

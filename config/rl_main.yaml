@@ -97,7 +97,7 @@ rl:
   checkpoint_every: 25
 
   rollout:
-    num_conditions: 4
+    num_conditions: 8
     group_size: 8
     num_fill: [0, 26]       # hard difficulty
     max_steps: 243          # denoising reduction for training rollouts
@@ -116,14 +116,15 @@ rl:
     step_fraction: 0.25
     include_order_steps: true
     update_batch_size: 8
+    optimizer_steps_per_epoch: 4    # gradient accumulation: few steps per rollout batch
     clip_range: 1.e-2
-    kl_beta: 0.01
+    kl_beta: 0.04
     noise_aware_weighting: false
     adv_eps: 1.e-4
     skip_degenerate_groups: true
     grad_clip: 1.0
     sigma_aux_weight: 0.01
-    flow_anchor_weight: 0.0
+    flow_anchor_weight: 0.1         # supervised anchor against off-manifold drift
     aux_batch_size: 8
     aux_batches_per_epoch: 1
 
