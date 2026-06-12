@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from dataclasses import dataclass
 from math import prod
 from typing import Literal
@@ -26,6 +27,12 @@ class TrajectoryRecordingSamplerCfg(SequentialAdaptiveSamplerCfg):
     order_temperature: float | None = None
     storage_device: str = "cpu"
     storage_dtype: str = "float32"
+    # autocast dtype for the denoiser forward (e.g. "bfloat16"); the Gaussian
+    # transition math always runs in float32 so log-probs stay precise
+    autocast_dtype: str | None = None
+    # use the torch.compile'd denoiser forward (rollout batch shape is fixed,
+    # so compilation amortizes over max_steps network evaluations)
+    compile: bool = False
 
 
 class TrajectoryRecordingSampler(SequentialAdaptiveSampler):
@@ -124,6 +131,10 @@ class TrajectoryRecordingSampler(SequentialAdaptiveSampler):
         assert model.cfg.patch_size is not None, "RL rollouts require a patch-based SRM"
         if not model.cfg.conditioning.label:
             label = None
+        autocast_ctx = (
+            torch.autocast(device.type, dtype=getattr(torch, self.cfg.autocast_dtype))
+            if self.cfg.autocast_dtype else nullcontext()
+        )
 
         # Conditioning by repainting known patches (cf. Sampler.get_defaults)
         z_t = masked + mask * z_t
@@ -168,15 +179,20 @@ class TrajectoryRecordingSampler(SequentialAdaptiveSampler):
             t_patch = scheduling_matrix[step_id].to(**storage, copy=True)
             t = self.get_timestep_from_schedule(scheduling_matrix, step_id, image_shape)
 
-            mean_theta, v_theta, sigma_theta = model.forward(
-                z_t=z_t.unsqueeze(1),
-                t=t.unsqueeze(1),
-                label=label,
-                c_cat=None,
-                sample=True,
-                use_ema=self.cfg.use_ema
-            )
-            sigma_theta = sigma_theta.squeeze(1)
+            with autocast_ctx:
+                # sample=False routes through the compiled denoiser (and always
+                # uses the raw weights, which is what RL rollouts want anyway)
+                mean_theta, v_theta, sigma_theta = model.forward(
+                    z_t=z_t.unsqueeze(1),
+                    t=t.unsqueeze(1),
+                    label=label,
+                    c_cat=None,
+                    sample=not self.cfg.compile,
+                    use_ema=self.cfg.use_ema
+                )
+            mean_theta = mean_theta.float()
+            v_theta = v_theta.float() if v_theta is not None else None
+            sigma_theta = sigma_theta.float().squeeze(1)
             should_predict = step_targets == step_id
 
             if is_unknown_map.sum() > eps_threshold and should_predict.any():

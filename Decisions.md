@@ -244,3 +244,41 @@ Flow-GRPO-style training takes ~1–4 optimizer steps per rollout round.
 
 Degraded runs should be restarted from the pretrained checkpoint with a fresh
 run id (resuming loads the contaminated weights and EMA from `rl_state.pt`).
+
+## D17. Multi-GPU training and mixed precision
+
+**Multi-GPU (torchrun, no DDP wrapper):** `train_rl.sh` auto-launches
+`torchrun --standalone --nproc_per_node=<gpus>` when more than one GPU is
+visible. Design choices:
+- **Conditions are per-rank** (`rl.rollout.num_conditions` is per GPU, matching
+  the repo's per-GPU `data_loader.batch_size` convention); each group of G
+  rollouts lives entirely on one rank, so group-relative advantages need no
+  communication.
+- **Manual gradient all-reduce instead of a DDP wrapper:** ranks can have
+  different numbers of microbatches (active-step counts vary), which breaks
+  DDP's backward-hook synchronization. Instead, each inner epoch splits the
+  local microbatch list into exactly `optimizer_steps_per_epoch` chunks
+  (np.array_split, possibly empty), so every rank executes the same fixed
+  number of all-reduce + step collectives per epoch — lockstep by construction.
+  Zero grads are materialized for parameters untouched by a rank's local loss
+  (e.g. order-loss terms present on one rank only) to keep collectives matched.
+- Identical gradients after all-reduce + identical AdamW state keep weights
+  (and therefore EMA) bit-synced; verified by the distributed smoke test
+  (`torchrun --standalone --nproc_per_node=2 -m tests.rl_smoke_test`, gloo/CPU).
+- Eval shards sample indices `rank::world_size`; metric records are averaged
+  across ranks inside `_log` (a collective all ranks must enter); file/wandb
+  logging and checkpointing happen on rank 0 only. Seeds are offset by rank so
+  rollout conditions and noise differ across GPUs.
+
+**Mixed precision (`rl.precision`, default "bf16"):** denoiser forwards in
+rollouts, GRPO updates, and aux losses run under bfloat16 autocast (CUDA only);
+network outputs are cast back to float32 before any Gaussian transition math,
+so log-probs, ratios, and KLs keep full precision. Behavior and recomputed
+log-probs use the same autocast path, so the ratio == 1 consistency at epoch
+start is preserved exactly. Eval sampling stays full precision (it is rare and
+is the number compared against the paper).
+
+**Optional rollout compilation (`rl.rollout.compile`, default off):** rollout
+forwards use the model's `forward_compiled` path; the rollout batch shape is
+fixed across all `max_steps` evaluations, so compilation amortizes well. Off by
+default because compile warmup costs minutes and pays off only for long runs.

@@ -8,8 +8,9 @@ from .reward import SudokuRewardCfg
 
 @dataclass
 class RolloutCfg:
-    # conditions (masked Sudokus) per iteration; each gets group_size rollouts.
-    # Too few conditions -> highly correlated advantages -> noisy gradients
+    # conditions (masked Sudokus) per iteration PER GPU (like the repo's
+    # data_loader batch_size); each gets group_size rollouts. Too few
+    # conditions -> highly correlated advantages -> noisy gradients
     num_conditions: int = 8
     group_size: int = 8                     # G
     # number of cells given to the model: [lo, hi] inclusive; [0, 26] = hard
@@ -23,6 +24,7 @@ class RolloutCfg:
     storage_device: str = "cpu"
     storage_dtype: str = "float32"
     progress_bar: bool = False              # tqdm over rollout denoising steps
+    compile: bool = False                   # torch.compile the rollout denoiser forward
 
 
 @dataclass
@@ -82,6 +84,9 @@ class RLCfg:
     pretrained_checkpoint: str
     num_iterations: int = 1000
     checkpoint_every: int = 25
+    # "bf16": denoiser forwards in bfloat16 autocast during rollouts/updates
+    # (Gaussian transition math stays float32); "32": full precision
+    precision: str = "bf16"
     rollout: RolloutCfg = field(default_factory=RolloutCfg)
     update: UpdateCfg = field(default_factory=UpdateCfg)
     order_policy: OrderPolicyCfg = field(default_factory=OrderPolicyCfg)

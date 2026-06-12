@@ -95,9 +95,11 @@ Outputs (checkpoints + `metrics.jsonl`) go to `outputs_rl/[experiment]/[id]`. Th
 bash test.sh ms1000_28 paper ms_hard_seq_adaptive000 checkpointing.load=outputs_rl/ms1000_28/[id]/checkpoints/policy_latest.pth
 ```
 
+The RL training automatically runs distributed (torchrun) on all available GPUs; `rl.rollout.num_conditions` is per GPU, so the effective batch scales with the GPU count. Denoiser forwards run in bfloat16 autocast by default (`rl.precision=32` for full precision); set `rl.rollout.compile=true` to `torch.compile` the rollout forward on long runs.
+
 Key configuration (see the `rl:` section of `config/rl_main.yaml`):
 * `rl.rollout.*` — group size, masking difficulty, reduced rollout step budget (denoising reduction). Before long runs, check how much accuracy the reduced budget costs the frozen baseline and adjust `max_steps`.
-* `rl.update.*` — PPO clip range, KL coefficient to the frozen reference, timestep subsampling fraction, and the σ-NLL auxiliary weight that keeps the uncertainty head (which drives generation order) calibrated during RL.
+* `rl.update.*` — PPO clip range, KL coefficient to the frozen reference, timestep subsampling fraction, gradient accumulation (`optimizer_steps_per_epoch`), and the σ-NLL auxiliary weight that keeps the uncertainty head (which drives generation order) calibrated during RL.
 * `rl.order_policy.enabled=true` — Stage 2: turns the greedy lowest-uncertainty ordering into a stochastic categorical policy whose decisions are optimized by GRPO directly.
 
 A CPU smoke test of the full RL pipeline (no datasets/checkpoints needed) is available via `DEBUG=false python -m tests.rl_smoke_test`.

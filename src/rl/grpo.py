@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from copy import deepcopy
 import json
 from math import ceil, prod
@@ -19,6 +20,12 @@ from ..sampler.sequential_adaptive_sampler import (
     SequentialAdaptiveSamplerCfg,
 )
 from .config import RLRootCfg
+from .distributed import (
+    all_reduce_grads,
+    all_reduce_mean_scalars,
+    get_rank,
+    get_world_size,
+)
 from .reward import SudokuReward
 from .rollout import TrajectoryRecordingSampler, TrajectoryRecordingSamplerCfg
 from .trajectory import RolloutBatch
@@ -57,6 +64,15 @@ class GRPOTrainer:
         self.device = next(model.parameters()).device
         self.image_shape = tuple(cfg.dataset.image_shape)
         self.iteration = 0
+        self.rank, self.world_size = get_rank(), get_world_size()
+        if self.rank != 0:
+            self.rl.eval.progress_bar = False
+            self.rl.rollout.progress_bar = False
+        self.autocast_dtype = (
+            torch.bfloat16
+            if self.rl.precision == "bf16" and self.device.type == "cuda"
+            else None
+        )
 
         # Policy starts from the EMA weights; reference = frozen copy of them
         if model.ema_denoiser is not None:
@@ -85,6 +101,8 @@ class GRPOTrainer:
                 storage_device=self.rl.rollout.storage_device,
                 storage_dtype=self.rl.rollout.storage_dtype,
                 progress_bar=self.rl.rollout.progress_bar,
+                autocast_dtype="bfloat16" if self.autocast_dtype is not None else None,
+                compile=self.rl.rollout.compile,
             ),
             patch_size=model.cfg.patch_size,
             patch_grid_shape=model.patch_grid_size,
@@ -114,6 +132,13 @@ class GRPOTrainer:
 
     # ---------------------------------------------------------------- helpers
 
+    def _autocast(self):
+        """Autocast for denoiser forwards; Gaussian math stays float32 by
+        casting network outputs back (cf. Decisions.md D17)."""
+        if self.autocast_dtype is None:
+            return nullcontext()
+        return torch.autocast(self.device.type, dtype=self.autocast_dtype)
+
     def _patch_to_pixel(
         self,
         t_rows: Float[Tensor, "batch num_patches"]
@@ -130,7 +155,9 @@ class GRPOTrainer:
         """Wrapper.forward for an explicit denoiser module (used for the frozen
         reference); returns mean (model parameterization) and v_theta."""
         model_cfg = self.model.cfg.model
-        pred = denoiser.forward(z_t, t, None)
+        with self._autocast():
+            pred = denoiser.forward(z_t, t, None)
+        pred = pred.float()
         d = self.model.d_data
         mean_theta = pred[..., :d, :, :]
         mean_theta = getattr(self.model.flow, f"get_{model_cfg.parameterization}")(
@@ -164,6 +191,11 @@ class GRPOTrainer:
         return total / count.clamp(min=1)
 
     def _log(self, record: dict) -> None:
+        """Average numeric metrics across ranks, then log on rank 0.
+        Must be called by all ranks (collective)."""
+        record = all_reduce_mean_scalars(record, self.device)
+        if self.rank != 0:
+            return
         record = {"iteration": self.iteration, **record}
         print(json.dumps({k: round(v, 6) if isinstance(v, float) else v for k, v in record.items()}))
         with self.metrics_path.open("a") as f:
@@ -248,11 +280,14 @@ class GRPOTrainer:
         advantage = roll.advantage[b_idx.to(roll.advantage.device)].to(self.device)
         active = (t > t_next).logical_and(t_next > 0)
 
-        mean_theta, v_theta, sigma_theta = self.model.forward(
-            z_t.unsqueeze(1), t.unsqueeze(1), sample=True, use_ema=False
-        )
+        with self._autocast():
+            mean_theta, v_theta, sigma_theta = self.model.forward(
+                z_t.unsqueeze(1), t.unsqueeze(1), sample=True, use_ema=False
+            )
+        mean_theta = mean_theta.float()
+        sigma_theta = sigma_theta.float() if sigma_theta is not None else None
         # Transition variance is frozen during RL (Decisions.md D4)
-        v_detached = v_theta.detach() if v_theta is not None else None
+        v_detached = v_theta.detach().float() if v_theta is not None else None
         p_new = self.model.flow.conditional_p(
             mean_theta, z_t.unsqueeze(1), t.unsqueeze(1), t_next.unsqueeze(1),
             self.rl.rollout.alpha, self.rl.rollout.temperature, v_theta=v_detached
@@ -336,7 +371,10 @@ class GRPOTrainer:
         eps = model.flow.sample_eps(x)
         z_t = model.flow.get_zt(t, eps=eps, x=x)
 
-        mean_theta, _, sigma_theta = model.forward(z_t, t, sample=True, use_ema=False)
+        with self._autocast():
+            mean_theta, _, sigma_theta = model.forward(z_t, t, sample=True, use_ema=False)
+        mean_theta = mean_theta.float()
+        sigma_theta = sigma_theta.float() if sigma_theta is not None else None
         if model.cfg.model.parameterization == "eps":
             target = eps
         else:
@@ -355,7 +393,8 @@ class GRPOTrainer:
         return loss
 
     def _apply_optimizer_step(self) -> None:
-        """Clip + step + EMA update on already-accumulated gradients."""
+        """Sync (multi-GPU) + clip + step + EMA update on accumulated gradients."""
+        all_reduce_grads(self.model.denoiser)
         if self.rl.update.grad_clip is not None:
             torch.nn.utils.clip_grad_norm_(
                 self.model.denoiser.parameters(), self.rl.update.grad_clip
@@ -404,20 +443,22 @@ class GRPOTrainer:
             # Accumulate microbatch gradients into few optimizer steps per epoch:
             # AdamW normalizes gradient scale, so taking a step per microbatch
             # amounts to hundreds of noise-driven steps per rollout batch and
-            # makes the policy drift off the pretrained manifold (Decisions.md D16)
-            num_microbatches = ceil(b_idx.numel() / upd.update_batch_size)
-            accumulate = max(1, ceil(num_microbatches / upd.optimizer_steps_per_epoch))
+            # makes the policy drift off the pretrained manifold (Decisions.md D16).
+            # Every rank performs exactly optimizer_steps_per_epoch (+1 aux) steps
+            # regardless of its local microbatch count, keeping the multi-GPU
+            # gradient all-reduces in lockstep (Decisions.md D17).
+            mb_starts = np.arange(0, b_idx.numel(), upd.update_batch_size)
+            chunks = np.array_split(mb_starts, upd.optimizer_steps_per_epoch)
             self.optimizer.zero_grad(set_to_none=True)
-            accumulated = 0
-            for i, start in enumerate(range(0, b_idx.numel(), upd.update_batch_size)):
-                end = start + upd.update_batch_size
-                loss = self._grpo_microbatch_loss(roll, b_idx[start:end], s_idx[start:end], stats)
-                (loss / accumulate).backward()
-                accumulated += 1
-                if accumulated == accumulate or i == num_microbatches - 1:
-                    self._apply_optimizer_step()
-                    num_optimizer_steps += 1
-                    accumulated = 0
+            for chunk in chunks:
+                for start in chunk:
+                    end = start + upd.update_batch_size
+                    loss = self._grpo_microbatch_loss(
+                        roll, b_idx[start:end], s_idx[start:end], stats
+                    )
+                    (loss / max(len(chunk), 1)).backward()
+                self._apply_optimizer_step()
+                num_optimizer_steps += 1
             aux = self._aux_loss(stats)
             if aux is not None:
                 aux.backward()
@@ -432,10 +473,13 @@ class GRPOTrainer:
 
     @torch.no_grad()
     def evaluate(self) -> dict:
+        """Each rank evaluates a strided shard of the sample indices; the
+        cross-rank average happens in _log. Returns local-shard means."""
         ev = self.rl.eval
         lo, hi = ev.num_fill
         all_scores = []
-        batch_starts = range(0, ev.num_samples, ev.batch_size)
+        shard = list(range(self.rank, ev.num_samples, self.world_size))
+        batch_starts = range(0, len(shard), ev.batch_size)
         if ev.progress_bar:
             batch_starts = tqdm(
                 batch_starts,
@@ -443,7 +487,7 @@ class GRPOTrainer:
                 unit="batch",
             )
         for start in batch_starts:
-            indices = list(range(start, min(start + ev.batch_size, ev.num_samples)))
+            indices = shard[start : start + ev.batch_size]
             num_given = [
                 int(np.random.default_rng(idx).integers(lo, hi + 1)) for idx in indices
             ]
@@ -472,6 +516,8 @@ class GRPOTrainer:
     # ---------------------------------------------------------- checkpointing
 
     def save_checkpoint(self) -> None:
+        if self.rank != 0:
+            return
         state = {
             "iteration": self.iteration,
             "model": self.model.state_dict(),

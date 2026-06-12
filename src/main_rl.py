@@ -15,6 +15,7 @@ from src.dataset import get_dataset
 from src.global_cfg import set_cfg
 from src.model.wrapper import Wrapper
 from src.rl import GRPOTrainer, load_typed_rl_config
+from src.rl.distributed import maybe_init_distributed
 
 
 def cyan(text: str) -> str:
@@ -29,10 +30,13 @@ def cyan(text: str) -> str:
 def main(cfg_dict: DictConfig):
     cfg = load_typed_rl_config(cfg_dict)
     set_cfg(cfg_dict)
+    # launched via torchrun for multi-GPU (cf. train_rl.sh / Decisions.md D17)
+    rank, world_size, device = maybe_init_distributed()
     if cfg.seed is not None:
-        torch.manual_seed(cfg.seed)
+        # offset by rank so rollout conditions/noise differ across GPUs
+        torch.manual_seed(cfg.seed + rank)
         import numpy as np
-        np.random.seed(cfg.seed)
+        np.random.seed(cfg.seed + rank)
 
     if cfg.torch.float32_matmul_precision is not None:
         torch.set_float32_matmul_precision(cfg.torch.float32_matmul_precision)
@@ -41,9 +45,9 @@ def main(cfg_dict: DictConfig):
     output_dir = Path(
         hydra.core.hydra_config.HydraConfig.get()["runtime"]["output_dir"]
     )
-    print(cyan(f"Saving RL outputs to {output_dir}."))
+    if rank == 0:
+        print(cyan(f"Saving RL outputs to {output_dir} ({world_size} process(es))."))
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     d_data = 1 if cfg.dataset.grayscale else 3
     train_dataset = get_dataset(cfg.dataset, cfg.conditioning, "train")
     test_dataset = get_dataset(cfg.dataset, cfg.conditioning, "test")
@@ -56,11 +60,11 @@ def main(cfg_dict: DictConfig):
     else:
         state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
-    if missing or unexpected:
+    if (missing or unexpected) and rank == 0:
         print(cyan(f"Checkpoint load: {len(missing)} missing, {len(unexpected)} unexpected keys"))
     model = model.to(device)
 
-    use_wandb = cfg.wandb.activated
+    use_wandb = cfg.wandb.activated and rank == 0
     if use_wandb:
         import wandb
         wandb.init(

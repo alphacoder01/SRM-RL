@@ -194,9 +194,59 @@ def check_eval(trainer: GRPOTrainer) -> None:
     print(f"  eval OK: {metrics}")
 
 
+def check_distributed(world: int, rank: int) -> None:
+    """Run under torchrun (gloo on CPU): verify ranks collect different
+    rollouts but end every update with identical parameters."""
+    from pathlib import Path
+    import tempfile
+    import torch.distributed as dist
+
+    torch.manual_seed(0)        # identical model init on all ranks
+    np.random.seed(0)
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer = build_trainer(Path(tmp), order_enabled=False)
+        # diverge per-rank rollout conditions and sampling noise
+        np.random.seed(100 + rank)
+        torch.manual_seed(1234 + rank)
+        roll = trainer.collect()
+
+        # rollouts must differ across ranks
+        reward_sum = roll.reward.sum()
+        gathered_rewards = [torch.zeros_like(reward_sum) for _ in range(world)]
+        dist.all_gather(gathered_rewards, reward_sum)
+        assert not torch.allclose(gathered_rewards[0], gathered_rewards[1]), \
+            "ranks collected identical rollouts (seeding broken)"
+
+        stats = trainer.update(roll)
+        assert stats["optimizer_steps"] == trainer.rl.update.optimizer_steps_per_epoch + 1
+
+        # parameters (and EMA) must stay bit-synced across ranks
+        for module in (trainer.model.denoiser, trainer.model.ema_denoiser.module):
+            vec = torch.nn.utils.parameters_to_vector(module.parameters())
+            checks = torch.stack([vec.sum(), vec.abs().sum()])
+            gathered = [torch.zeros_like(checks) for _ in range(world)]
+            dist.all_gather(gathered, checks)
+            for g in gathered[1:]:
+                assert torch.allclose(g, gathered[0], atol=1.e-6), \
+                    "parameters diverged across ranks"
+
+        # sharded eval + collective metric reduction must not deadlock
+        trainer._log({"phase": "eval", **trainer.evaluate()})
+    if rank == 0:
+        print(f"  distributed OK: world={world}, optimizer_steps={stats['optimizer_steps']}")
+        print("Distributed smoke test passed.")
+
+
 def main() -> None:
     from pathlib import Path
     import tempfile
+
+    from src.rl.distributed import maybe_init_distributed
+
+    rank, world, _ = maybe_init_distributed()
+    if world > 1:
+        check_distributed(world, rank)
+        return
 
     torch.manual_seed(0)
     np.random.seed(0)
