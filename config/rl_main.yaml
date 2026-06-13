@@ -95,6 +95,7 @@ rl:
   pretrained_checkpoint: ???
   num_iterations: 1000
   checkpoint_every: 25
+  progress_bar: true        # tqdm bar over training iterations
   precision: bf16           # bf16 autocast for denoiser forwards; "32" for full precision
 
   rollout:

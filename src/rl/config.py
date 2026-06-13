@@ -92,6 +92,7 @@ class RLCfg:
     pretrained_checkpoint: str
     num_iterations: int = 1000
     checkpoint_every: int = 25
+    progress_bar: bool = True       # tqdm bar over training iterations (rank 0)
     # "bf16": denoiser forwards in bfloat16 autocast during rollouts/updates
     # (Gaussian transition math stays float32); "32": full precision
     precision: str = "bf16"

@@ -64,6 +64,8 @@ class GRPOTrainer:
         self.device = next(model.parameters()).device
         self.image_shape = tuple(cfg.dataset.image_shape)
         self.iteration = 0
+        self._pbar = None       # set in fit() on rank 0 when progress_bar is on
+        self._last_eval_acc = float("nan")
         self.rank, self.world_size = get_rank(), get_world_size()
         if self.rank != 0:
             self.rl.eval.progress_bar = False
@@ -190,23 +192,29 @@ class GRPOTrainer:
         count = values.shape[1] * active.flatten(1).sum(dim=1)
         return total / count.clamp(min=1)
 
-    def _log(self, record: dict) -> None:
+    def _log(self, record: dict) -> dict:
         """Average numeric metrics across ranks, then log on rank 0.
-        Must be called by all ranks (collective)."""
+        Must be called by all ranks (collective). Returns the reduced record."""
         record = all_reduce_mean_scalars(record, self.device)
         if self.rank != 0:
-            return
+            return record
         record = {"iteration": self.iteration, **record}
-        print(json.dumps({k: round(v, 6) if isinstance(v, float) else v for k, v in record.items()}))
+        line = json.dumps({k: round(v, 6) if isinstance(v, float) else v for k, v in record.items()})
+        # write through the bar so log lines scroll above it instead of corrupting it
+        if self._pbar is not None:
+            self._pbar.write(line)
+        else:
+            print(line)
         with self.metrics_path.open("a") as f:
             f.write(json.dumps(record) + "\n")
         if self.use_wandb:
             import wandb
-            phase = record.pop("phase", "train")
+            phase = record.get("phase", "train")
             wandb.log(
                 {f"{phase}/{k}": v for k, v in record.items() if isinstance(v, (int, float))},
                 step=self.iteration,
             )
+        return record
 
     # ------------------------------------------------------------ data access
 
@@ -555,9 +563,18 @@ class GRPOTrainer:
     def fit(self) -> None:
         if self.load_checkpoint():
             print(f"Resumed RL training from iteration {self.iteration}")
+        if self.rank == 0 and self.rl.progress_bar:
+            self._pbar = tqdm(
+                total=self.rl.num_iterations,
+                initial=self.iteration,
+                desc="GRPO training",
+                unit="it",
+                dynamic_ncols=True,
+            )
         while self.iteration < self.rl.num_iterations:
             if self.rl.eval.every > 0 and self.iteration % self.rl.eval.every == 0:
-                self._log({"phase": "eval", **self.evaluate()})
+                eval_rec = self._log({"phase": "eval", **self.evaluate()})
+                self._last_eval_acc = eval_rec.get("accuracy", float("nan"))
             roll = self.collect()
             # Rollout and update run sequentially; return the rollout's cached
             # allocator blocks so the update gets maximal contiguous headroom
@@ -565,15 +582,26 @@ class GRPOTrainer:
             if self.device.type == "cuda":
                 torch.cuda.empty_cache()
             update_stats = self.update(roll)
-            self._log({
+            train_rec = self._log({
                 "phase": "train",
                 **roll.metrics,
                 "advantage_abs": roll.advantage.abs().mean().item(),
                 **update_stats,
             })
             self.iteration += 1
+            if self._pbar is not None:
+                self._pbar.update(1)
+                self._pbar.set_postfix(
+                    acc=f"{train_rec.get('accuracy', float('nan')):.3f}",
+                    rew=f"{train_rec.get('reward_mean', float('nan')):.3f}",
+                    kl=f"{train_rec.get('kl', float('nan')):.4f}",
+                    eval_acc=f"{self._last_eval_acc:.3f}",
+                    refresh=False,
+                )
             if self.iteration % self.rl.checkpoint_every == 0:
                 self.save_checkpoint()
         self.save_checkpoint()
         if self.rl.eval.every > 0:
             self._log({"phase": "eval", **self.evaluate()})
+        if self._pbar is not None:
+            self._pbar.close()
