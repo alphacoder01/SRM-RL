@@ -406,3 +406,34 @@ full eval; eval runs every 25 iters at 1000 steps. Recommended overrides for
 speed: `rl.eval.max_steps=243` (accuracy saturates well below 1000, verified)
 and `rl.eval.every=50` to cut periodic eval cost, plus `rl.update.update_batch_size=24`
 when GPU headroom allows.
+
+## D22. 8-GPU OOM: update_batch_size is the backward-activation memory knob
+
+**Observation:** an 8-GPU run OOM'd in the denoiser forward with ~75 GB
+allocated and ~1 GB "reserved but unallocated" (partly fragmentation). It
+followed a recommendation to shard (`num_conditions=2`) *and* raise
+`update_batch_size` 16 -> 24.
+
+**Cause:** the memory asymmetry between phases. The rollout runs under `no_grad`
+(inference), so its batch (num_conditions x group_size) is cheap — the prior
+2-GPU run's ~65 GB peak was the rollout at batch 64. The update retains
+activations for backward, costing ~10-20x more memory per sample, so
+`update_batch_size` dominates peak memory. Raising it 16 -> 24 inflated the
+backward-activation peak past 80 GB even though 24 << the rollout's batch 64
+that fit fine. (Same effect as the D20 batch-32 OOM.) Recommending the raise was
+the mistake.
+
+**Fixes / guidance:**
+- `train_rl.sh` now exports `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
+  (unless already set) — directly targets the reserved-but-unallocated
+  fragmentation the error flagged.
+- Corrected the README OOM playbook: `update_batch_size` is the dominant knob
+  (backward activations; keep <=16, lower to 8); the rollout batch / num_conditions
+  is cheap (no_grad) and is a speed knob, not a memory knob; `rollout.compile=false`
+  if OOM persists (compilation adds peak memory).
+- Default `update_batch_size` stays 16 (the value that ran fine on 80 GB); do NOT
+  raise it without measured headroom.
+
+**Recommended sharded 8-GPU command:** `num_conditions=2`, `update_batch_size=16`
+(NOT 24), `eval.max_steps=243`, `eval.every=50`. The durable way to use a larger
+update batch is gradient checkpointing on the update forward (future work).

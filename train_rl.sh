@@ -15,6 +15,11 @@ if [ "$id" == 'null' ]; then
     id=$(date '+%Y-%m-%d_%H-%M-%S')
 fi
 
+# Reduce CUDA caching-allocator fragmentation (the failure mode where an alloc
+# fails despite "reserved but unallocated" memory). Override by exporting it
+# yourself before calling this script.
+export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+
 NUM_GPUS=$(python -c "import torch; print(torch.cuda.device_count())" 2>/dev/null || echo 0)
 if [ "${NUM_GPUS:-0}" -gt 1 ]; then
     LAUNCHER="torchrun --standalone --nproc_per_node=${NUM_GPUS} -m src.main_rl"
