@@ -102,6 +102,12 @@ Key configuration (see the `rl:` section of `config/rl_main.yaml`):
 * `rl.update.*` — PPO clip range, KL coefficient to the frozen reference, timestep subsampling fraction, gradient accumulation (`optimizer_steps_per_epoch`), and the σ-NLL auxiliary weight that keeps the uncertainty head (which drives generation order) calibrated during RL.
 * `rl.order_policy.enabled=true` — Stage 2: turns the greedy lowest-uncertainty ordering into a stochastic categorical policy whose decisions are optimized by GRPO directly.
 
+To visualize a run, plot its `metrics.jsonl` (saves `metrics_overview.png` and `metrics_eval_accuracy.png` into the run folder):
+
+```bash
+bash plot_metrics.sh outputs_rl/ms1000_28/[id] [--smooth N]
+```
+
 A CPU smoke test of the full RL pipeline (no datasets/checkpoints needed) is available via `DEBUG=false python -m tests.rl_smoke_test`.
 
 ## 📘 Citation
