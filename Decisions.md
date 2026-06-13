@@ -347,3 +347,31 @@ per-microbatch KL reference forward made it the clear bottleneck.
 - `rl.rollout.compile=true` (already used) compiles the rollout forward; the
   eager update forward remains a future compile target (needs fixed microbatch
   shape, now satisfied by the pair-chunked loop, to avoid recompiles).
+
+## D20. OOM at update_batch_size=32 on A100-80GB; corrected default and headroom guard
+
+**Observation:** D19's `update_batch_size=32` OOM'd on 2xA100-80GB even with
+`storage_device=cpu`. run2 (batch 8) had completed fine, so the OOM is the
+update forward+backward, not the rollout.
+
+**Why the ceiling is below pretraining's batch 28:** the RL update holds more
+per-sample memory than supervised pretraining did — a second (reference) forward
+for the KL term, several full-resolution DiagonalGaussian tensors
+(mean/var/logp/kl maps), and three resident model copies (policy + EMA +
+frozen reference) vs pretraining's two. So batch 32 exceeded 80 GB where
+pretraining's batch 28 fit.
+
+**Fixes:**
+- `update.update_batch_size` 32 -> 16 default: comfortably under the pretraining
+  batch, still ~2x fewer microbatches/kernels than the original 8, so it keeps a
+  real speedup. Documented as the primary OOM knob (lower to 8 if still OOM,
+  raise toward 24 with headroom). Because the accumulation is batch-invariant
+  (D19), changing it never changes the optimization.
+- `torch.cuda.empty_cache()` between `collect()` and `update()` each iteration:
+  the two phases are sequential, so returning the rollout's cached allocator
+  blocks gives the update maximal contiguous headroom and guards against
+  fragmentation OOM. One call per iteration, negligible cost.
+
+**OOM playbook (documented in README):** lower `update_batch_size` first; then
+reduce rollout memory via `rollout.group_size` / `rollout.num_conditions`; keep
+`rollout.storage_device=cpu`.

@@ -559,6 +559,11 @@ class GRPOTrainer:
             if self.rl.eval.every > 0 and self.iteration % self.rl.eval.every == 0:
                 self._log({"phase": "eval", **self.evaluate()})
             roll = self.collect()
+            # Rollout and update run sequentially; return the rollout's cached
+            # allocator blocks so the update gets maximal contiguous headroom
+            # (guards against fragmentation OOM; cf. Decisions.md D20).
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
             update_stats = self.update(roll)
             self._log({
                 "phase": "train",

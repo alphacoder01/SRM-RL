@@ -46,10 +46,13 @@ class UpdateCfg:
     include_order_steps: bool = True
     # (trajectory, step) pairs per forward/backward microbatch. Pure throughput
     # knob: gradient accumulation (below) already averages microbatches, so this
-    # does not change the optimization, only GPU utilization. 8 badly
-    # under-fills a 118M UNet at full resolution (pretraining used batch 28);
-    # raised to 32 since the eager update is the dominant cost (cf. Decisions D19)
-    update_batch_size: int = 32
+    # does not change the optimization, only GPU utilization and peak memory.
+    # This is the primary OOM knob. The RL update holds more per-sample memory
+    # than pretraining (KL reference forward + Gaussian tensors + three model
+    # copies), so the safe ceiling is below pretraining's batch 28: 32 OOM'd on
+    # A100-80GB, 16 is the safe default (still ~2x fewer kernels than the
+    # original 8). Lower to 8 if OOM, raise toward 24 if there is headroom.
+    update_batch_size: int = 16
     # gradients are accumulated so each inner epoch takes only this many
     # optimizer steps; stepping per microbatch makes AdamW take hundreds of
     # noise-driven steps per rollout batch and the policy drifts off the
