@@ -29,9 +29,12 @@ class RolloutCfg:
 
 @dataclass
 class OrderPolicyCfg:
-    # Stage 2: stochastic categorical order policy (cf. Decisions.md D3)
+    # Stage 2: stochastic categorical order policy (cf. Decisions.md D3, D23)
     enabled: bool = False
-    temperature: float = 0.1                # logits = -sigma_patch / temperature
+    # temperature in units of the sigma spread across candidate patches
+    # (logits are standardized, D23). Small -> near-greedy; ~1 -> explore within
+    # ~1 std of the greedy choice. Verify iter-0 train acc is close to eval.
+    temperature: float = 0.5
     loss_weight: float = 1.0
 
 

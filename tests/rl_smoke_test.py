@@ -169,6 +169,24 @@ def check_rollout(trainer: GRPOTrainer) -> None:
         events_per_traj = (roll.order_event_idx >= 0).sum(dim=0)
         unknown_per_traj = (~known).sum(dim=1)
         assert torch.equal(events_per_traj, unknown_per_traj.cpu())
+        # order-logp recomputation consistency: standardized logits in the
+        # update must match those used at rollout time, so recomputed order
+        # log-probs equal the stored behavior log-probs (D23). Recompute under
+        # the (unchanged) policy from a fresh sigma forward.
+        from src.rl.rollout import TrajectoryRecordingSampler
+        ev = (roll.order_event_idx >= 0).T.nonzero(as_tuple=True)
+        b_ev, s_ev = ev
+        eids = roll.order_event_idx[s_ev, b_ev]
+        z = roll.z_seq[s_ev, b_ev].to(trainer.device, torch.float32)
+        t = trainer._patch_to_pixel(roll.t_patch[s_ev, b_ev].to(trainer.device, torch.float32))
+        _, _, sigma = trainer.model.forward(z.unsqueeze(1), t.unsqueeze(1), sample=True, use_ema=False)
+        patch_sigma = trainer._sigma_to_patch(sigma.float())
+        re_logp = TrajectoryRecordingSampler.order_logp(
+            patch_sigma, roll.order_unknown[eids].to(trainer.device),
+            roll.order_patch[eids].to(trainer.device), trainer.rl.order_policy.temperature,
+        )
+        max_err = (re_logp.cpu() - roll.order_old_logp[eids]).abs().max().item()
+        assert max_err < 1e-4, f"order-logp recomputation mismatch, off by {max_err}"
     print(f"  rollout OK: steps={S}, trajectories={B}, "
           f"active_pairs={roll.active.sum().item()}, events={roll.order_patch.numel()}")
 

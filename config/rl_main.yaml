@@ -131,9 +131,9 @@ rl:
     aux_batch_size: 8
     aux_batches_per_epoch: 1
 
-  order_policy:             # Stage 2 (Decisions.md D3); off by default
+  order_policy:             # Stage 2 (Decisions.md D3/D23); off by default
     enabled: false
-    temperature: 0.1
+    temperature: 0.5        # in units of sigma-spread across candidates (standardized)
     loss_weight: 1.0
 
   reward:

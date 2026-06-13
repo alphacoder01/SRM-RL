@@ -56,6 +56,34 @@ class TrajectoryRecordingSampler(SequentialAdaptiveSampler):
     def stochastic_order(self) -> bool:
         return self.cfg.order_temperature is not None and self.cfg.order_temperature > 0
 
+    @staticmethod
+    def standardized_order_logits(
+        patch_sigma: Float[Tensor, "batch num_patches"],
+        is_unknown_map: Bool[Tensor, "batch num_patches"],
+        temperature: float,
+        eps: float = 1.e-6,
+    ) -> Float[Tensor, "batch num_patches"]:
+        """Scale-invariant per-patch order logits.
+
+        sigma_theta has an arbitrary absolute scale, so a raw `-sigma/temperature`
+        makes `temperature` un-interpretable and checkpoint-dependent (cf. the
+        Stage-2 collapse, Decisions.md D23). We standardize sigma across the
+        *unknown* (candidate) patches per batch element, so `temperature` is in
+        units of the sigma spread among candidates: small -> near-greedy, ~1 ->
+        explore within roughly one std of the greedy choice. Known patches -> -inf.
+        """
+        mask = is_unknown_map.to(patch_sigma.dtype)
+        count = mask.sum(dim=-1, keepdim=True).clamp(min=1.0)
+        mean = (patch_sigma * mask).sum(dim=-1, keepdim=True) / count
+        var = (((patch_sigma - mean) * mask) ** 2).sum(dim=-1, keepdim=True) / count
+        std = var.sqrt().clamp(min=eps)
+        # detach the standardization stats: they are a per-decision shift/scale
+        # for temperature interpretation, not parameters to differentiate. This
+        # also removes the sqrt(var) backward, which is +inf when var==0 (e.g.
+        # a decision with a single candidate patch) and would NaN the policy.
+        logits = -((patch_sigma - mean.detach()) / std.detach()) / temperature
+        return logits.masked_fill(~is_unknown_map, float("-inf"))
+
     def select_next_patches(
         self,
         sigma_theta: Float[Tensor, "batch d_data height width"],
@@ -73,8 +101,8 @@ class TrajectoryRecordingSampler(SequentialAdaptiveSampler):
         patch_sigma = avg_pool2d(
             sigma_theta, kernel_size=self.patch_size, count_include_pad=False
         ).reshape(-1, total_patches)
-        logits = (-patch_sigma / self.cfg.order_temperature).masked_fill(
-            ~is_unknown_map, float("-inf")
+        logits = self.standardized_order_logits(
+            patch_sigma, is_unknown_map, self.cfg.order_temperature
         )
         dist = Categorical(logits=logits)
         ids = dist.sample()
@@ -88,9 +116,10 @@ class TrajectoryRecordingSampler(SequentialAdaptiveSampler):
         temperature: float
     ) -> Float[Tensor, "batch"]:
         """Categorical log-prob of given order decisions (used for recomputation
-        under the current policy during GRPO updates)."""
-        logits = (-patch_sigma / temperature).masked_fill(
-            ~is_unknown_map, float("-inf")
+        under the current policy during GRPO updates). Must use the SAME
+        standardization as select_next_patches for ratio==1 at epoch start."""
+        logits = TrajectoryRecordingSampler.standardized_order_logits(
+            patch_sigma, is_unknown_map, temperature
         )
         return Categorical(logits=logits).log_prob(patch_ids)
 

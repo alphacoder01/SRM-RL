@@ -437,3 +437,35 @@ the mistake.
 **Recommended sharded 8-GPU command:** `num_conditions=2`, `update_batch_size=16`
 (NOT 24), `eval.max_steps=243`, `eval.every=50`. The durable way to use a larger
 update batch is gradient checkpointing on the update forward (future work).
+
+## D23. Stage-2 order policy: scale-invariant temperature (and a NaN fix)
+
+**Observation:** the first Stage-2 run collapsed. Eval (greedy `argmin sigma`) held
+at ~0.52-0.56, but train *rollout* accuracy was 0.06 at iteration 0 (before any
+training) and fell to 0; reward fell -1 -> -2.5. The stochastic order policy at
+`temperature=0.1` was sampling a near-random generation order, which on hard
+Sudoku is catastrophic (paper: random order ~0.02 vs predicted ~0.52). So every
+rollout failed, the advantage was noise, and training on garbage-order
+trajectories slowly corrupted the denoiser mean.
+
+**Root cause:** order logits were `-sigma_patch / temperature`, but sigma_theta
+has an arbitrary absolute scale (`exp(0.5*logvar)` pooled per patch), so
+`temperature` was un-interpretable and checkpoint-dependent; 0.1 happened to be
+near-uniform over candidates.
+
+**Fix:** `standardized_order_logits` standardizes sigma across the *unknown*
+(candidate) patches per decision, so `temperature` is in units of the sigma
+spread among candidates (small -> near-greedy; ~1 -> ~1 std of exploration),
+robust across checkpoints. The SAME helper is used at rollout time
+(`select_next_patches`) and update time (`order_logp`), preserving the
+ratio==1-at-epoch-start property (now asserted in the smoke test). Default
+`order_policy.temperature` changed 0.1 -> 0.5 to match the new units.
+
+**NaN subtlety:** every trajectory's final decision has a single candidate
+(var==0), and `sqrt(var)` has +inf gradient at 0, which (times the
+single-choice log_prob gradient of 0) produced NaN and destroyed the policy. The
+standardization stats (mean/std) are detached — they are a per-decision
+shift/scale for temperature interpretation, not parameters to differentiate —
+which removes the sqrt backward entirely and fixes the NaN. The policy gradient
+still flows through each patch's own sigma linearly (lower sigma_chosen -> higher
+selection logit), which is the intended order-learning signal.
