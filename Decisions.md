@@ -311,3 +311,39 @@ per-eval monitoring as guardrails, watch that KL settles in the ~0.01-0.05 band
 (not climbing unbounded) and `sigma_aux` stays near its initial ~-0.3; if KL
 runs away or eval/sigma_aux degrade, dial `lr` or `optimizer_steps_per_epoch`
 back down. These are the first knobs to tune per-checkpoint, not fixed truths.
+
+## D19. Throughput: the eager update phase dominates wall-clock
+
+**Profile (run2, ~10 h):** in forward-pass-equivalents, the GRPO update phase is
+~60% of total compute, rollout ~35%, eval ~3%. The update ran at
+`update_batch_size = 8` — far below what a 118M UNet at 252x252 saturates
+(pretraining used batch 28) — and post-D18's `inner_epochs = 2` plus the
+per-microbatch KL reference forward made it the clear bottleneck.
+
+**Changes:**
+- `update.update_batch_size` 8 -> 32: a pure throughput knob (4x fewer, larger
+  forward/backward calls on the dominant phase, GPU utilization comparable to
+  pretraining). No memory concern at batch 32 (pretraining trained batch 28 with
+  optimizer state on the same GPUs).
+- Fixed the gradient-accumulation chunking to be **pair-indexed** instead of
+  microbatch-count-indexed. Previously each optimizer step's set of pairs (and
+  thus its gradient) shifted with `update_batch_size`, so changing the batch
+  size changed the optimization (batch8-vs-batch32 single-iteration update
+  cosine was only 0.72). Now each optimizer step covers a fixed contiguous pair
+  chunk and accumulates microbatches weighted by their pair fraction, so its
+  gradient is the exact grand mean over the chunk regardless of batch size
+  (cosine 0.988, matched magnitude — residual is fp summation order). This makes
+  `update_batch_size` safe to tune for speed and also removes a latent
+  optimization dependence on it.
+
+**Other levers (not new defaults; per-run overrides):**
+- `rl.eval.max_steps=243` (or 162): eval accuracy is saturated well below 1000
+  steps (verified earlier), so 4x-cheaper evals during training; keep a final
+  1000-step eval for the paper-comparable number.
+- `rl.rollout.storage_device=cuda`: keeps the recorded latent trajectory on GPU
+  (exact, fp32), removing 243 host<->device syncs per rollout and the reload in
+  the update — worth it when GPU memory allows (~4 GB for the z buffer at the
+  default Sudoku rollout size).
+- `rl.rollout.compile=true` (already used) compiles the rollout forward; the
+  eager update forward remains a future compile target (needs fixed microbatch
+  shape, now satisfied by the pair-chunked loop, to avoid recompiles).

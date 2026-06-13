@@ -447,16 +447,29 @@ class GRPOTrainer:
             # Every rank performs exactly optimizer_steps_per_epoch (+1 aux) steps
             # regardless of its local microbatch count, keeping the multi-GPU
             # gradient all-reduces in lockstep (Decisions.md D17).
-            mb_starts = np.arange(0, b_idx.numel(), upd.update_batch_size)
-            chunks = np.array_split(mb_starts, upd.optimizer_steps_per_epoch)
+            #
+            # Chunk by PAIR index (not microbatch count) so each optimizer step
+            # sees a fixed set of pairs and its gradient is exactly the grand
+            # mean over that set, independent of update_batch_size. This makes
+            # update_batch_size a pure throughput knob (Decisions.md D19).
+            pair_chunks = np.array_split(
+                np.arange(b_idx.numel()), upd.optimizer_steps_per_epoch
+            )
             self.optimizer.zero_grad(set_to_none=True)
-            for chunk in chunks:
-                for start in chunk:
-                    end = start + upd.update_batch_size
+            for pchunk in pair_chunks:
+                n = len(pchunk)
+                if n == 0:
+                    self._apply_optimizer_step()       # keep ranks in lockstep
+                    num_optimizer_steps += 1
+                    continue
+                for start in range(0, n, upd.update_batch_size):
+                    sub = torch.from_numpy(pchunk[start : start + upd.update_batch_size])
                     loss = self._grpo_microbatch_loss(
-                        roll, b_idx[start:end], s_idx[start:end], stats
+                        roll, b_idx[sub], s_idx[sub], stats
                     )
-                    (loss / max(len(chunk), 1)).backward()
+                    # weight by the microbatch's pair fraction so the chunk's
+                    # accumulated gradient is the exact grand mean over n pairs
+                    (loss * len(sub) / n).backward()
                 self._apply_optimizer_step()
                 num_optimizer_steps += 1
             aux = self._aux_loss(stats)

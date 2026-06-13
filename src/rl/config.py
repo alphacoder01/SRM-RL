@@ -44,8 +44,12 @@ class UpdateCfg:
     step_fraction: float = 0.25
     # force order-decision steps into the subsample (relevant for Stage 2)
     include_order_steps: bool = True
-    # (trajectory, step) pairs per forward/backward microbatch
-    update_batch_size: int = 8
+    # (trajectory, step) pairs per forward/backward microbatch. Pure throughput
+    # knob: gradient accumulation (below) already averages microbatches, so this
+    # does not change the optimization, only GPU utilization. 8 badly
+    # under-fills a 118M UNet at full resolution (pretraining used batch 28);
+    # raised to 32 since the eager update is the dominant cost (cf. Decisions D19)
+    update_batch_size: int = 32
     # gradients are accumulated so each inner epoch takes only this many
     # optimizer steps; stepping per microbatch makes AdamW take hundreds of
     # noise-driven steps per rollout batch and the policy drifts off the
