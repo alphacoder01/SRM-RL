@@ -563,6 +563,17 @@ class GRPOTrainer:
     def fit(self) -> None:
         if self.load_checkpoint():
             print(f"Resumed RL training from iteration {self.iteration}")
+        if self.rank == 0:
+            rc = self.rl.rollout
+            global_conditions = rc.num_conditions * self.world_size
+            print(
+                f"[GRPO] world_size={self.world_size} | "
+                f"num_conditions/GPU={rc.num_conditions} -> global={global_conditions} | "
+                f"group_size={rc.group_size} | rollout batch/GPU={rc.num_conditions * rc.group_size} | "
+                f"global rollouts/iter={global_conditions * rc.group_size}. "
+                f"More GPUs only speed up an ITERATION if you keep global conditions "
+                f"fixed by lowering num_conditions/GPU (cf. Decisions.md D21)."
+            )
         if self.rank == 0 and self.rl.progress_bar:
             self._pbar = tqdm(
                 total=self.rl.num_iterations,

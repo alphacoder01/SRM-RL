@@ -97,6 +97,8 @@ bash test.sh ms1000_28 paper ms_hard_seq_adaptive000 checkpointing.load=outputs_
 
 The RL training automatically runs distributed (torchrun) on all available GPUs; `rl.rollout.num_conditions` is per GPU, so the effective batch scales with the GPU count. Denoiser forwards run in bfloat16 autocast by default (`rl.precision=32` for full precision); set `rl.rollout.compile=true` to `torch.compile` the rollout forward on long runs.
 
+**Scaling to more GPUs (speed vs. batch):** because `num_conditions` is per GPU, adding GPUs without changing it *grows the global batch* at the same seconds-per-iteration — it does not make an iteration faster. To make each iteration faster, keep the global batch fixed and shard it: set `rl.rollout.num_conditions = target_global / num_gpus` (groups must stay on one GPU, so the minimum is `num_conditions=1`). Example: to keep 16 global conditions, use `num_conditions=4` on 4 GPUs or `num_conditions=2` on 8 GPUs — each roughly halves per-iteration wall-clock vs. the step before. The startup log prints the effective global batch so you can confirm which regime you are in.
+
 If you hit CUDA OOM, the primary knob is `rl.update.update_batch_size` (default 16; lower to 8) — it only affects throughput/memory, not the optimization. Next, reduce rollout memory via `rl.rollout.group_size` / `rl.rollout.num_conditions`, and keep `rl.rollout.storage_device=cpu` (the default).
 
 Key configuration (see the `rl:` section of `config/rl_main.yaml`):

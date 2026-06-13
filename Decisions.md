@@ -375,3 +375,34 @@ pretraining's batch 28 fit.
 **OOM playbook (documented in README):** lower `update_batch_size` first; then
 reduce rollout memory via `rollout.group_size` / `rollout.num_conditions`; keep
 `rollout.storage_device=cpu`.
+
+## D21. Scaling across GPUs: shard the global batch, don't grow it
+
+**Question:** does adding GPUs make an iteration faster? In this design, not by
+default. `rollout.num_conditions` is PER GPU and each rank collects its own
+rollouts and updates on its own pairs with gradient all-reduce (D17). So adding
+GPUs at fixed `num_conditions` keeps per-GPU work constant and instead *grows
+the global batch* (more conditions/iteration) at the same seconds-per-iteration.
+That improves gradient quality / throughput, but does not reduce wall-clock per
+iteration — which is usually what "make it faster" means.
+
+**To reduce per-iteration wall-clock:** hold the global batch fixed and shard it
+across ranks by lowering `num_conditions` as GPUs are added, e.g. keep 16 global
+conditions via `num_conditions = 16 / num_gpus` (4 GPUs -> 4, 8 GPUs -> 2, 16
+GPUs -> 1; a group must live on one rank, so 1 is the floor). Both phases scale
+~linearly with per-GPU trajectories (rollout batch and update pair count), so
+this gives near-linear speedup until the rollout's 243 *sequential* steps become
+the floor at very small per-GPU batch.
+
+**Decision:** keep the per-GPU semantics (no breaking change) but print a startup
+summary on rank 0 — world size, conditions/GPU, derived global conditions,
+rollout batch/GPU, global rollouts/iter — so the operator can see whether adding
+GPUs grew the batch or sped up the iteration. The sharding recipe is documented
+in the README.
+
+**Related cost levers for the observed ~650 s/it (2x A100, 16 global conditions):**
+the first interval also includes torch.compile warmup and the iteration-0
+full eval; eval runs every 25 iters at 1000 steps. Recommended overrides for
+speed: `rl.eval.max_steps=243` (accuracy saturates well below 1000, verified)
+and `rl.eval.every=50` to cut periodic eval cost, plus `rl.update.update_batch_size=24`
+when GPU headroom allows.
