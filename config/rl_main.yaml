@@ -95,6 +95,7 @@ rl:
   pretrained_checkpoint: ???
   num_iterations: 1000
   checkpoint_every: 25
+  precision: bf16           # bf16 autocast for denoiser forwards; "32" for full precision
 
   rollout:
     num_conditions: 8
@@ -108,15 +109,16 @@ rl:
     storage_device: cpu
     storage_dtype: float32
     progress_bar: false
+    compile: false          # torch.compile the rollout denoiser forward
 
   update:
-    lr: 1.e-5
+    lr: 3.e-5
     weight_decay: 0.0
-    inner_epochs: 1
+    inner_epochs: 2
     step_fraction: 0.25
     include_order_steps: true
     update_batch_size: 8
-    optimizer_steps_per_epoch: 4    # gradient accumulation: few steps per rollout batch
+    optimizer_steps_per_epoch: 8    # gradient accumulation: few steps per rollout batch
     clip_range: 1.e-2
     kl_beta: 0.04
     noise_aware_weighting: false

@@ -282,3 +282,32 @@ is the number compared against the paper).
 forwards use the model's `forward_compiled` path; the rollout batch shape is
 fixed across all `max_steps` evaluations, so compilation amortizes well. Off by
 default because compile warmup costs minutes and pays off only for long runs.
+
+## D18. Second run was stable but under-trained: loosen the optimization
+
+**Observation (run2, 2 GPUs, 94 iterations, post-D16/D17 defaults):** no
+divergence — KL to reference flat at ~0.001, `sigma_aux` stable around -0.3
+(no off-manifold drift), train accuracy noisy around the 0.5 baseline. But also
+*no learning*: eval accuracy stayed pure-noise around 0.5 (0.50 / 0.50 / 0.61 /
+0.44 at iters 0/25/50/75), `pg_loss` ~1e-6, `ratio` ~0.9999, `clip_frac` ~0.
+
+**Diagnosis:** the D16 fix over-corrected. Total optimization per run was tiny
+(94 iters x 4 steps x lr 1e-5 = 376 AdamW steps on a 118M UNet), and the policy
+barely left the pretrained checkpoint (KL 0.001 vs the kl_beta coefficient of
+0.04 — ~40x of unused headroom; run1 only diverged past KL ~0.04 *without*
+anchors). The gradient signal was healthy (advantage_abs ~0.88, degenerate
+groups ~1/16); there simply was almost no step being taken.
+
+**Changes (defaults):**
+- `update.inner_epochs` 1 -> 2: reuse each (expensive) rollout batch twice,
+  PPO-style; the importance ratio + clip handle the mild within-batch
+  off-policyness.
+- `update.optimizer_steps_per_epoch` 4 -> 8: each step still averages hundreds
+  of (trajectory, step) pairs, so SNR stays high; safe given the strong anchors.
+- `update.lr` 1e-5 -> 3e-5.
+
+Net ~8x more effective optimization per iteration. With the KL/flow anchors and
+per-eval monitoring as guardrails, watch that KL settles in the ~0.01-0.05 band
+(not climbing unbounded) and `sigma_aux` stays near its initial ~-0.3; if KL
+runs away or eval/sigma_aux degrade, dial `lr` or `optimizer_steps_per_epoch`
+back down. These are the first knobs to tune per-checkpoint, not fixed truths.

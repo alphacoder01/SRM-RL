@@ -37,9 +37,9 @@ class OrderPolicyCfg:
 
 @dataclass
 class UpdateCfg:
-    lr: float = 1.e-5
+    lr: float = 3.e-5
     weight_decay: float = 0.0
-    inner_epochs: int = 1
+    inner_epochs: int = 2
     # fraction of each trajectory's active steps trained per inner epoch
     step_fraction: float = 0.25
     # force order-decision steps into the subsample (relevant for Stage 2)
@@ -49,8 +49,9 @@ class UpdateCfg:
     # gradients are accumulated so each inner epoch takes only this many
     # optimizer steps; stepping per microbatch makes AdamW take hundreds of
     # noise-driven steps per rollout batch and the policy drifts off the
-    # pretrained manifold (cf. Decisions.md D16)
-    optimizer_steps_per_epoch: int = 4
+    # pretrained manifold (cf. Decisions.md D16). Raised 4 -> 8 once D18 showed
+    # the policy was barely moving (KL ~0.001) with the conservative defaults.
+    optimizer_steps_per_epoch: int = 8
     clip_range: float = 1.e-2               # calibrated for per-scalar mean log-probs
     kl_beta: float = 0.04                   # 0 disables the reference forward pass
     noise_aware_weighting: bool = False
