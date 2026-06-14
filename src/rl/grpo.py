@@ -131,6 +131,10 @@ class GRPOTrainer:
         self.metrics_path = output_dir / "metrics.jsonl"
         self.checkpoint_dir = output_dir / "checkpoints"
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        # adaptive KL: self.kl_beta is mutable; if update.kl_target is set it is
+        # nudged toward keeping the measured KL near the target (cf. D24)
+        self.kl_beta = self.rl.update.kl_beta
+        self._best_eval_acc = -float("inf")
 
     # ---------------------------------------------------------------- helpers
 
@@ -319,7 +323,7 @@ class GRPOTrainer:
         )
         stats["pg_loss"].append(loss.item())
 
-        if upd.kl_beta > 0:
+        if self.kl_beta > 0 or upd.kl_target is not None:
             with torch.no_grad():
                 ref_mean, ref_v = self._predict(
                     self.ref_denoiser, z_t.unsqueeze(1), t.unsqueeze(1)
@@ -330,7 +334,7 @@ class GRPOTrainer:
                 )
             kl_map = p_new.kl(p_ref).squeeze(1)
             kl = self._masked_mean(kl_map, active).mean()
-            loss = loss + upd.kl_beta * kl
+            loss = loss + self.kl_beta * kl
             stats["kl"].append(kl.detach().item())
 
         if self.rl.order_policy.enabled:
@@ -488,6 +492,16 @@ class GRPOTrainer:
         result = {k: float(np.mean(v)) for k, v in stats.items() if v}
         result["num_pairs"] = num_pairs
         result["optimizer_steps"] = num_optimizer_steps
+        # Adaptive KL controller: nudge kl_beta to keep the measured KL near the
+        # target, preventing the unbounded drift that over-optimizes past the
+        # good region (cf. Decisions.md D24). Disabled when kl_target is None.
+        if upd.kl_target is not None and "kl" in result:
+            ratio_to_target = result["kl"] / max(upd.kl_target, 1.e-8)
+            if ratio_to_target > 1.5:
+                self.kl_beta = min(self.kl_beta * upd.kl_adapt_rate, upd.kl_beta_max)
+            elif ratio_to_target < 1 / 1.5:
+                self.kl_beta = max(self.kl_beta / upd.kl_adapt_rate, upd.kl_beta_min)
+        result["kl_beta"] = self.kl_beta
         return result
 
     # ------------------------------------------------------------ evaluation
@@ -543,10 +557,22 @@ class GRPOTrainer:
             "iteration": self.iteration,
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
+            "kl_beta": self.kl_beta,
+            "best_eval_acc": self._best_eval_acc,
         }
         torch.save(state, self.checkpoint_dir / "rl_state.pt")
         # plain state_dict for the existing test pipeline (checkpointing.load=*.pth)
         torch.save(self.model.state_dict(), self.checkpoint_dir / "policy_latest.pth")
+
+    def maybe_save_best(self, eval_acc: float) -> bool:
+        """Keep the best-by-eval-accuracy policy so transient peaks are not lost
+        when the policy later drifts (cf. Decisions.md D24). Rank 0 only."""
+        if eval_acc <= self._best_eval_acc:
+            return False
+        self._best_eval_acc = eval_acc
+        if self.rank == 0:
+            torch.save(self.model.state_dict(), self.checkpoint_dir / "policy_best.pth")
+        return True
 
     def load_checkpoint(self) -> bool:
         path = self.checkpoint_dir / "rl_state.pt"
@@ -556,6 +582,8 @@ class GRPOTrainer:
         self.model.load_state_dict(state["model"])
         self.optimizer.load_state_dict(state["optimizer"])
         self.iteration = state["iteration"]
+        self.kl_beta = state.get("kl_beta", self.kl_beta)
+        self._best_eval_acc = state.get("best_eval_acc", self._best_eval_acc)
         return True
 
     # ------------------------------------------------------------------ loop
@@ -586,6 +614,7 @@ class GRPOTrainer:
             if self.rl.eval.every > 0 and self.iteration % self.rl.eval.every == 0:
                 eval_rec = self._log({"phase": "eval", **self.evaluate()})
                 self._last_eval_acc = eval_rec.get("accuracy", float("nan"))
+                self.maybe_save_best(self._last_eval_acc)
             roll = self.collect()
             # Rollout and update run sequentially; return the rollout's cached
             # allocator blocks so the update gets maximal contiguous headroom
@@ -613,6 +642,7 @@ class GRPOTrainer:
                 self.save_checkpoint()
         self.save_checkpoint()
         if self.rl.eval.every > 0:
-            self._log({"phase": "eval", **self.evaluate()})
+            final_eval = self._log({"phase": "eval", **self.evaluate()})
+            self.maybe_save_best(final_eval.get("accuracy", float("nan")))
         if self._pbar is not None:
             self._pbar.close()

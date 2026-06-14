@@ -206,6 +206,19 @@ def check_update(trainer: GRPOTrainer) -> None:
     print(f"  update OK: {stats}")
 
 
+def check_adaptive_kl_and_best(trainer: GRPOTrainer) -> None:
+    # adaptive KL: a tiny target should push kl_beta up; best-checkpoint saving
+    trainer.rl.update.kl_target = 1.e-9       # measured KL >> target -> beta rises
+    beta0 = trainer.kl_beta
+    roll = trainer.collect()
+    stats = trainer.update(roll)
+    assert "kl_beta" in stats and stats["kl_beta"] > beta0, "adaptive KL should raise beta"
+    assert trainer.maybe_save_best(0.5) and (trainer.checkpoint_dir / "policy_best.pth").exists()
+    assert not trainer.maybe_save_best(0.4), "lower acc must not overwrite best"
+    assert trainer.maybe_save_best(0.6)
+    print(f"  adaptive-KL/best OK: kl_beta {beta0:.3f}->{stats['kl_beta']:.3f}, best_acc={trainer._best_eval_acc}")
+
+
 def check_eval(trainer: GRPOTrainer) -> None:
     metrics = trainer.evaluate()
     assert set(metrics) == {"reward", "accuracy", "distance"}
@@ -277,6 +290,7 @@ def main() -> None:
             check_update(trainer)
             if not order_enabled:
                 check_eval(trainer)
+                check_adaptive_kl_and_best(trainer)
     print("All smoke tests passed.")
 
 

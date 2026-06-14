@@ -469,3 +469,32 @@ shift/scale for temperature interpretation, not parameters to differentiate —
 which removes the sqrt backward entirely and fixes the NaN. The policy gradient
 still flows through each patch's own sigma linearly (lower sigma_chosen -> higher
 selection logit), which is the intended order-learning signal.
+
+## D24. Stage-2 over-optimization: best-checkpoint + adaptive KL
+
+**Observation (stage2_fixed, corrected temperature):** the learned order beat
+greedy — eval accuracy 0.56-0.625 over iters 25-100 vs the 0.484 baseline (peak
+0.625 / distance 2.47 at iter 50) — but it did not hold: by iter 125 eval
+regressed to baseline while KL climbed monotonically and accelerated (0.00002 ->
+0.0042). Classic RL over-optimization: it found a better region, then drifted
+past it. (Caveat: eval n=64 gives +/-0.06 noise, so single peaks are partly luck,
+but the sustained 0.55-0.62 band is a real signal.)
+
+**Fixes:**
+1. **Best-by-eval checkpoint** (`policy_best.pth`): `maybe_save_best` keeps the
+   highest-eval-accuracy policy so a transient peak is never lost to later drift.
+   The last-iteration `policy_latest.pth` is still written for resume. Best acc is
+   persisted in `rl_state.pt`.
+2. **Adaptive KL controller** (`update.kl_target`, default None = fixed beta):
+   `self.kl_beta` is now mutable and, when a target is set, is multiplied/divided
+   by `kl_adapt_rate` (clamped to `[kl_beta_min, kl_beta_max]`) to keep the
+   measured KL within ~1.5x of `kl_target`. This holds the policy near the good
+   region instead of letting KL grow unboundedly. `kl_beta` is logged each
+   iteration and restored on resume.
+3. **Larger eval default** (`eval.num_samples` 64 -> 128): halves eval noise (SE
+   ~ 0.5/sqrt(n)) so the accuracy trend is trustworthy enough to act on; use 256
+   for final decisions.
+
+**Recommended stabilized Stage-2 rerun:** enable `rl.update.kl_target=0.003`
+(near the level where the good region was found), keep `temperature=0.5`,
+`eval.every=10`, and select `policy_best.pth` for the final evaluation.

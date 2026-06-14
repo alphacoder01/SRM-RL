@@ -121,7 +121,11 @@ rl:
     update_batch_size: 16           # primary OOM knob; throughput only (accumulation keeps math fixed)
     optimizer_steps_per_epoch: 8    # gradient accumulation: few steps per rollout batch
     clip_range: 1.e-2
-    kl_beta: 0.04
+    kl_beta: 0.04             # initial value; adapted if kl_target is set
+    kl_target: null          # set (e.g. 0.003) to enable the adaptive KL controller (D24)
+    kl_adapt_rate: 1.5
+    kl_beta_min: 1.e-3
+    kl_beta_max: 1.0
     noise_aware_weighting: false
     adv_eps: 1.e-4
     skip_degenerate_groups: true
@@ -142,7 +146,7 @@ rl:
 
   eval:
     every: 25
-    num_samples: 64
+    num_samples: 128        # larger -> less noisy eval (SE ~ 0.5/sqrt(n))
     batch_size: 16
     num_fill: [0, 26]
     max_steps: 1000         # full budget at eval time

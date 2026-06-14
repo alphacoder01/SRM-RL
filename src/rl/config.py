@@ -63,7 +63,13 @@ class UpdateCfg:
     # the policy was barely moving (KL ~0.001) with the conservative defaults.
     optimizer_steps_per_epoch: int = 8
     clip_range: float = 1.e-2               # calibrated for per-scalar mean log-probs
-    kl_beta: float = 0.04                   # 0 disables the reference forward pass
+    kl_beta: float = 0.04                   # 0 disables the reference forward pass (initial value if adaptive)
+    # adaptive KL controller (cf. Decisions.md D24): if set, kl_beta is nudged to
+    # keep the measured KL near kl_target, preventing drift past the good region
+    kl_target: float | None = None
+    kl_adapt_rate: float = 1.5
+    kl_beta_min: float = 1.e-3
+    kl_beta_max: float = 1.0
     noise_aware_weighting: bool = False
     adv_eps: float = 1.e-4
     skip_degenerate_groups: bool = True
@@ -78,7 +84,7 @@ class UpdateCfg:
 @dataclass
 class RLEvalCfg:
     every: int = 25                         # iterations between evals (0 disables)
-    num_samples: int = 64
+    num_samples: int = 128                  # larger -> less noisy eval (SE ~ 0.5/sqrt(n))
     batch_size: int = 16
     num_fill: list[int] = field(default_factory=lambda: [0, 26])
     max_steps: int = 1000                   # full budget at eval time
