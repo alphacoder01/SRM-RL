@@ -155,3 +155,4 @@ rl:
     alpha: 1.0
     use_ema: true
     progress_bar: true
+    dump_samples: false     # set true in eval-only runs for paired McNemar comparison (D25)

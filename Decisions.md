@@ -498,3 +498,29 @@ but the sustained 0.55-0.62 band is a real signal.)
 **Recommended stabilized Stage-2 rerun:** enable `rl.update.kl_target=0.003`
 (near the level where the good region was found), keep `temperature=0.5`,
 `eval.every=10`, and select `policy_best.pth` for the final evaluation.
+
+## D25. Honest evaluation: paired McNemar testing of RL vs baseline
+
+**Observation:** the headline "RL beats greedy" weakened under scrutiny. The
+n=128 training evals (0.56-0.62) were optimistic — best-checkpoint selection is
+the max of noisy evals. A larger eval-only validation (n=208) gave RL 0.514 vs
+baseline 0.466 (+0.048), but: (a) marginally that is ~1 sigma (p~0.33, not
+significant), and (b) the RL model sits essentially at the paper's published
+predicted-order baseline (0.516), while this run's base draw (0.466) came in low.
+
+**Decision:** marginal accuracy at small n cannot resolve this; use a *paired*
+test. Both eval runs see identical puzzles (deterministic per-index seeding), so
+most puzzles both-solve or both-fail and only discordant ones carry signal — a
+McNemar test is far more powerful than comparing 0.514 vs 0.466.
+
+- `evaluate()` gains `eval.dump_samples`: writes per-sample (index, correct,
+  distance) to `output_dir/eval_samples_it{N}.jsonl`, gathered across ranks
+  (all_gather_object) and keyed by the deterministic sample index.
+- `src/rl/paired_eval.py` (+ `paired_eval.sh`) loads two dumps, matches on
+  index, and reports paired accuracies, the discordant-pair counts, and an
+  exact two-sided McNemar p-value. Runnable standalone (stdlib only).
+
+**Methodological note:** best-checkpoint selection on a noisy eval is
+optimistically biased; the SELECTED checkpoint must be re-evaluated on a fresh,
+larger, paired sample to get an unbiased estimate. The true RL level is likely
+~0.55-0.56, not 0.62.

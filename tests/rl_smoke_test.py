@@ -220,8 +220,14 @@ def check_adaptive_kl_and_best(trainer: GRPOTrainer) -> None:
 
 
 def check_eval(trainer: GRPOTrainer) -> None:
+    trainer.rl.eval.dump_samples = True
     metrics = trainer.evaluate()
     assert set(metrics) == {"reward", "accuracy", "distance"}
+    dumps = list(trainer.output_dir.glob("eval_samples_it*.jsonl"))
+    assert dumps, "dump_samples did not write a per-sample file"
+    import json as _json
+    rows = [_json.loads(l) for l in dumps[0].read_text().splitlines() if l.strip()]
+    assert len(rows) == trainer.rl.eval.num_samples and {"index", "correct", "distance"} <= rows[0].keys()
     print(f"  eval OK: {metrics}")
 
 

@@ -509,10 +509,13 @@ class GRPOTrainer:
     @torch.no_grad()
     def evaluate(self) -> dict:
         """Each rank evaluates a strided shard of the sample indices; the
-        cross-rank average happens in _log. Returns local-shard means."""
+        cross-rank average happens in _log. Returns local-shard means.
+        If eval.dump_samples is set, also writes per-sample (index, accuracy,
+        distance) to output_dir for paired comparison across runs (D25)."""
         ev = self.rl.eval
         lo, hi = ev.num_fill
         all_scores = []
+        per_sample = []     # (index, accuracy, distance) for dumping
         shard = list(range(self.rank, ev.num_samples, self.world_size))
         batch_starts = range(0, len(shard), ev.batch_size)
         if ev.progress_bar:
@@ -539,14 +542,40 @@ class GRPOTrainer:
                 ) for idx in indices
             ])
             out = self.eval_sampler(self.model, z_t=z_init, mask=mask, masked=masked)
-            all_scores.append(self.reward_fn(out["sample"]))
+            scores = self.reward_fn(out["sample"])
+            all_scores.append(scores)
+            if ev.dump_samples:
+                for j, idx in enumerate(indices):
+                    per_sample.append((
+                        idx, scores["accuracy"][j].item(), scores["distance"][j].item()
+                    ))
             if ev.progress_bar:
                 acc = torch.cat([s["accuracy"] for s in all_scores])
                 batch_starts.set_postfix(acc=f"{acc.mean().item():.3f}", n=acc.numel())
+        if ev.dump_samples:
+            self._dump_eval_samples(per_sample)
         return {
             key: torch.cat([s[key] for s in all_scores]).mean().item()
             for key in all_scores[0]
         }
+
+    def _dump_eval_samples(self, per_sample: list) -> None:
+        """Gather per-sample eval results across ranks and write them on rank 0,
+        keyed by the (deterministic) sample index so two runs can be compared
+        per-puzzle (paired McNemar test, cf. src/rl/paired_eval.py)."""
+        if self.world_size > 1:
+            import torch.distributed as dist
+            gathered = [None] * self.world_size
+            dist.all_gather_object(gathered, per_sample)
+            if self.rank != 0:
+                return
+            per_sample = [row for part in gathered for row in part]
+        per_sample.sort(key=lambda r: r[0])
+        path = self.output_dir / f"eval_samples_it{self.iteration}.jsonl"
+        with path.open("w") as f:
+            for idx, acc, dist in per_sample:
+                f.write(json.dumps({"index": idx, "correct": int(acc), "distance": dist}) + "\n")
+        print(f"Wrote {len(per_sample)} per-sample eval results to {path}")
 
     # ---------------------------------------------------------- checkpointing
 

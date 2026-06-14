@@ -93,6 +93,7 @@ class RLEvalCfg:
     alpha: float = 1.0
     use_ema: bool = True
     progress_bar: bool = True               # tqdm over eval batches and denoising steps
+    dump_samples: bool = False              # write per-sample results for paired comparison (D25)
 
 
 @dataclass
