@@ -36,6 +36,9 @@ class OrderPolicyCfg:
     # ~1 std of the greedy choice. Verify iter-0 train acc is close to eval.
     temperature: float = 0.5
     loss_weight: float = 1.0
+    # anchor the learned order distribution to the frozen reference order
+    # (pretrained predicted-uncertainty order); 0 disables (cf. D26)
+    kl_beta: float = 0.0
 
 
 @dataclass

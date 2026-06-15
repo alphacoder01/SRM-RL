@@ -524,3 +524,35 @@ McNemar test is far more powerful than comparing 0.514 vs 0.466.
 optimistically biased; the SELECTED checkpoint must be re-evaluated on a fresh,
 larger, paired sample to get an unbiased estimate. The true RL level is likely
 ~0.55-0.56, not 0.62.
+
+## D26. Order-policy KL anchor for healthier Stage-2 training
+
+**Motivation:** the n=500 paired validation gave RL 0.522 vs base 0.478
+(+0.044, McNemar p=0.19, not significant) with very high discordance — 256/500
+puzzles (51%) flipped outcome (RL fixed 139, broke 117). That is the signature
+of a policy that moved *sideways* (substantially different) more than *up*
+(net-better), consistent with the stage2_stable run stalling after ~iter 40
+(adaptive-KL saturated, nothing anchored the order from drifting).
+
+**Decision:** add an explicit anchor on the order distribution itself.
+`order_policy.kl_beta` (default 0) penalizes `KL(pi_order_new || pi_order_ref)`
+per decision, where the reference order is the frozen pretrained model's
+standardized sigma-order at the same state (`_ref_patch_sigma`). This keeps the
+learned order close to the good predicted-uncertainty order, deviating only
+where it improves reward — directly countering the sideways drift. It is more
+surgical than re-enabling `sigma_aux` (which would also drag sigma back toward
+calibration, partly undoing Stage 2).
+
+- Implemented with the SAME `standardized_order_logits` used for sampling, so
+  cur/ref distributions are comparable and the ratio==1 property is unaffected.
+- `torch.distributions.kl_divergence` over the masked categoricals is finite
+  because both share the unknown-patch mask. A `nan_to_num` guard on
+  `patch_sigma` (applied identically in rollout and update) makes the logits
+  robust to exp-overflow of extreme log-variance.
+
+**Recommended healthier Stage-2 run** (replaces the saturating adaptive KL with
+a fixed denoising KL + the order anchor): `order_policy.enabled=true`,
+`order_policy.temperature=0.5`, `order_policy.kl_beta=0.1`, `update.kl_beta=0.05`,
+`update.kl_target=null`, `sigma_aux_weight=0.0`, longer `num_iterations`,
+`eval.dump_samples=true`; select `policy_best.pth` and confirm with the paired
+McNemar test at n>=1000.

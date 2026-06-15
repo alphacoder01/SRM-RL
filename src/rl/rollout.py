@@ -72,6 +72,10 @@ class TrajectoryRecordingSampler(SequentialAdaptiveSampler):
         units of the sigma spread among candidates: small -> near-greedy, ~1 ->
         explore within roughly one std of the greedy choice. Known patches -> -inf.
         """
+        # guard against non-finite sigma (e.g. exp overflow of an extreme
+        # log-variance); applied identically in rollout and update so the
+        # ratio==1 property is preserved
+        patch_sigma = torch.nan_to_num(patch_sigma, nan=0.0, posinf=1.e4, neginf=0.0)
         mask = is_unknown_map.to(patch_sigma.dtype)
         count = mask.sum(dim=-1, keepdim=True).clamp(min=1.0)
         mean = (patch_sigma * mask).sum(dim=-1, keepdim=True) / count

@@ -203,6 +203,14 @@ def check_update(trainer: GRPOTrainer) -> None:
     assert stats["num_pairs"] > 0
     assert not torch.equal(params_before, params_after), "update must change the policy"
     assert np.isfinite(stats["pg_loss"]) and np.isfinite(stats["sigma_aux"])
+    if trainer.rl.order_policy.enabled:
+        # order-KL anchor must produce a finite, non-negative KL
+        trainer.rl.order_policy.kl_beta = 0.1
+        roll2 = trainer.collect()
+        stats2 = trainer.update(roll2)
+        assert "order_kl" in stats2 and np.isfinite(stats2["order_kl"]) and stats2["order_kl"] >= -1e-6, \
+            f"order_kl must be finite and >=0, got {stats2.get('order_kl')}"
+        trainer.rl.order_policy.kl_beta = 0.0
     print(f"  update OK: {stats}")
 
 

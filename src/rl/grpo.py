@@ -186,6 +186,21 @@ class GRPOTrainer:
         )
         return patch_sigma.reshape(-1, prod(self.model.patch_grid_size))
 
+    def _ref_patch_sigma(
+        self,
+        z_t: Float[Tensor, "rows 1 dim height width"],
+        t: Float[Tensor, "rows 1 1 height width"],
+    ) -> Float[Tensor, "rows num_patches"]:
+        """Per-patch sigma from the frozen reference denoiser, matching the
+        policy's pooling, for anchoring the order distribution (cf. D26)."""
+        with torch.no_grad(), self._autocast():
+            pred = self.ref_denoiser.forward(z_t, t, None)
+        logvar = pred.float()[..., -1:, :, :].squeeze(1)     # [rows, 1, H, W]
+        patch_logvar = avg_pool2d(
+            logvar, kernel_size=self.model.cfg.patch_size, count_include_pad=False
+        ).reshape(-1, prod(self.model.patch_grid_size))
+        return torch.exp(0.5 * patch_logvar)
+
     @staticmethod
     def _masked_mean(
         values: Float[Tensor, "batch dim height width"],
@@ -344,12 +359,13 @@ class GRPOTrainer:
                 rows = has_event.nonzero(as_tuple=True)[0]
                 events = event_ids[rows]
                 patch_sigma = self._sigma_to_patch(sigma_theta)[rows.to(self.device)]
-                logp_order = TrajectoryRecordingSampler.order_logp(
-                    patch_sigma,
-                    roll.order_unknown[events].to(self.device),
-                    roll.order_patch[events].to(self.device),
-                    self.rl.order_policy.temperature,
+                unknown = roll.order_unknown[events].to(self.device)
+                patch_ids = roll.order_patch[events].to(self.device)
+                cur_logits = TrajectoryRecordingSampler.standardized_order_logits(
+                    patch_sigma, unknown, self.rl.order_policy.temperature
                 )
+                cur_dist = torch.distributions.Categorical(logits=cur_logits)
+                logp_order = cur_dist.log_prob(patch_ids)
                 old_logp_order = roll.order_old_logp[events].to(self.device, torch.float32)
                 adv_order = advantage[rows.to(self.device)]
                 ratio_o = torch.exp(logp_order - old_logp_order)
@@ -358,6 +374,21 @@ class GRPOTrainer:
                 order_loss = -surrogate_o.mean()
                 loss = loss + self.rl.order_policy.loss_weight * order_loss
                 stats["order_loss"].append(order_loss.detach().item())
+
+                # Anchor the order distribution to the frozen reference's order
+                # (the pretrained predicted-uncertainty order), so RL only
+                # deviates where it helps reward instead of drifting sideways (D26).
+                if self.rl.order_policy.kl_beta > 0:
+                    ref_sigma = self._ref_patch_sigma(
+                        z_t[rows].unsqueeze(1), t[rows].unsqueeze(1)
+                    )
+                    ref_logits = TrajectoryRecordingSampler.standardized_order_logits(
+                        ref_sigma, unknown, self.rl.order_policy.temperature
+                    )
+                    ref_dist = torch.distributions.Categorical(logits=ref_logits)
+                    order_kl = torch.distributions.kl_divergence(cur_dist, ref_dist).mean()
+                    loss = loss + self.rl.order_policy.kl_beta * order_kl
+                    stats["order_kl"].append(order_kl.detach().item())
 
         return loss
 
@@ -443,7 +474,8 @@ class GRPOTrainer:
     def update(self, roll: RolloutBatch) -> dict:
         upd = self.rl.update
         stats = {k: [] for k in (
-            "ratio", "clip_frac", "pg_loss", "kl", "order_loss", "sigma_aux", "flow_anchor"
+            "ratio", "clip_frac", "pg_loss", "kl", "order_loss", "order_kl",
+            "sigma_aux", "flow_anchor"
         )}
         num_pairs = 0
         num_optimizer_steps = 0
