@@ -436,12 +436,19 @@ class GRPOTrainer:
         return loss
 
     def _apply_optimizer_step(self) -> None:
-        """Sync (multi-GPU) + clip + step + EMA update on accumulated gradients."""
+        """Sync (multi-GPU) + clip + step + EMA update on accumulated gradients.
+        Skips the step if the gradient norm is non-finite, so one bad microbatch
+        cannot corrupt a long run (a NaN grad would otherwise propagate to all
+        weights). All ranks must decide identically to stay in lockstep: the grad
+        norm is already synced (gradients all-reduced above)."""
         all_reduce_grads(self.model.denoiser)
         if self.rl.update.grad_clip is not None:
-            torch.nn.utils.clip_grad_norm_(
+            total_norm = torch.nn.utils.clip_grad_norm_(
                 self.model.denoiser.parameters(), self.rl.update.grad_clip
             )
+            if not torch.isfinite(total_norm):
+                self.optimizer.zero_grad(set_to_none=True)
+                return
         self.optimizer.step()
         self.optimizer.zero_grad(set_to_none=True)
         if self.model.ema_denoiser is not None:

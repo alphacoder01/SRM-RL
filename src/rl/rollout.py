@@ -85,8 +85,20 @@ class TrajectoryRecordingSampler(SequentialAdaptiveSampler):
         # for temperature interpretation, not parameters to differentiate. This
         # also removes the sqrt(var) backward, which is +inf when var==0 (e.g.
         # a decision with a single candidate patch) and would NaN the policy.
-        logits = -((patch_sigma - mean.detach()) / std.detach()) / temperature
-        return logits.masked_fill(~is_unknown_map, float("-inf"))
+        score = (patch_sigma - mean.detach()) / std.detach()
+        # bound the standardized score: when the candidate sigmas are nearly
+        # equal (std -> 0) the 1/std factor makes the per-logit gradient explode
+        # (it NaN'd the order-KL anchor, which sums that gradient over all
+        # patches). Clamping gives zero gradient in that degenerate region while
+        # leaving the normal case (|score| <~ few) untouched. Applied identically
+        # in rollout and update, so the ratio==1 property is preserved (D26).
+        score = score.clamp(-8.0, 8.0)
+        logits = -score / temperature
+        # mask with a large finite negative (not -inf): exp(-1e9)=0 so sampling
+        # and log_prob are identical to -inf masking, but KL(cur||ref) over the
+        # categoricals stays finite in the BACKWARD pass (-inf gives 0*(-inf+inf)
+        # = NaN gradients that blew up the order-KL anchor, D26).
+        return logits.masked_fill(~is_unknown_map, -1.e9)
 
     def select_next_patches(
         self,

@@ -556,3 +556,34 @@ a fixed denoising KL + the order anchor): `order_policy.enabled=true`,
 `update.kl_target=null`, `sigma_aux_weight=0.0`, longer `num_iterations`,
 `eval.dump_samples=true`; select `policy_best.pth` and confirm with the paired
 McNemar test at n>=1000.
+
+## D27. Order-KL NaN: finite masking + score clamp + non-finite-grad guard
+
+**Observation:** the first stage2_anchored run (order_policy.kl_beta=0.1) NaN'd at
+iteration 0 — `order_kl` logged 2.01 (should be ~0 at init since policy==ref),
+then weights corrupted and every later iteration showed degenerate groups,
+distance 432 (classifier on NaN images), num_pairs 0.
+
+**Root cause (two compounding bugs in the order-KL anchor):**
+1. The order logits masked known patches with `-inf`. `KL(cur||ref)` over the
+   categoricals is fine in the forward (torch overwrites the masked entries) but
+   the BACKWARD computes `0 * (-inf + inf) = NaN` gradients. The order *loss*
+   (PPO surrogate) never hit this because its log_prob only touches the chosen
+   (unmasked) patch; the KL sums over all patches including masked ones.
+2. The standardized score `(sigma - mean)/std` has a `1/std` factor that
+   explodes when candidate sigmas are nearly equal; the KL sums that over all
+   patches, amplifying the blowup. Gradient clipping cannot rescue it because
+   `inf * clip_coef = NaN`.
+
+**Fixes:**
+- Mask with a large finite negative (`-1e9`) instead of `-inf`: `exp(-1e9)=0`, so
+  sampling and log_prob are identical, but the KL backward stays finite.
+- Clamp the standardized score to `[-8, 8]` (zero gradient in the degenerate
+  small-std region, normal case untouched). Both applied identically in rollout
+  and update, so the ratio==1 property holds.
+- `_apply_optimizer_step` skips the step if the (already all-reduced) gradient
+  norm is non-finite — one bad microbatch can no longer corrupt a long run, and
+  all ranks decide identically so multi-GPU stays in lockstep.
+
+Verified: order-KL gradients are finite for near-equal, normal, and
+single-candidate decisions (smoke test + a direct gradient check).
