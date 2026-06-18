@@ -62,11 +62,22 @@ def all_reduce_grads(module: torch.nn.Module) -> None:
 
 def all_reduce_mean_scalars(record: dict, device: torch.device) -> dict:
     """Average the numeric entries of a metrics record across ranks.
-    All ranks must call this with the same numeric keys (config-determined)."""
+
+    Robust to ranks having DIFFERENT numeric keys (e.g. a rank whose groups were
+    all degenerate has no pairs, so it lacks ratio/pg_loss/kl) — a fixed-size
+    all_reduce would deadlock on mismatched tensor sizes (cf. Decisions.md D28).
+    Each key is averaged only over the ranks that report it; all ranks call this
+    (it is collective via all_gather_object)."""
     if get_world_size() == 1:
         return record
-    keys = sorted(k for k, v in record.items() if isinstance(v, (int, float)))
-    values = torch.tensor([float(record[k]) for k in keys], device=device)
-    dist.all_reduce(values)
-    values /= get_world_size()
-    return {**record, **dict(zip(keys, values.tolist()))}
+    local = {k: float(v) for k, v in record.items() if isinstance(v, (int, float))}
+    gathered: list = [None] * get_world_size()
+    dist.all_gather_object(gathered, local)
+    if get_rank() != 0:
+        return record       # only rank 0 logs
+    agg = {}
+    for key in set().union(*(g.keys() for g in gathered)):
+        vals = [g[key] for g in gathered if key in g]
+        if vals:
+            agg[key] = sum(vals) / len(vals)
+    return {**record, **agg}

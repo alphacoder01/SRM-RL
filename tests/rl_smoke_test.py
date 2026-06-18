@@ -263,7 +263,8 @@ def check_distributed(world: int, rank: int) -> None:
             "ranks collected identical rollouts (seeding broken)"
 
         stats = trainer.update(roll)
-        assert stats["optimizer_steps"] == trainer.rl.update.optimizer_steps_per_epoch + 1
+        upd = trainer.rl.update
+        assert stats["optimizer_steps"] == upd.inner_epochs * (upd.optimizer_steps_per_epoch + 1)
 
         # parameters (and EMA) must stay bit-synced across ranks
         for module in (trainer.model.denoiser, trainer.model.ema_denoiser.module):

@@ -587,3 +587,28 @@ distance 432 (classifier on NaN images), num_pairs 0.
 
 Verified: order-KL gradients are finite for near-equal, normal, and
 single-candidate decisions (smoke test + a direct gradient check).
+
+## D28. Multi-GPU deadlock on medium difficulty: heterogeneous metric keys
+
+**Observation:** the stage1_medium run completed iteration-0 eval (acc 0.773,
+matching the paper's predicted-order medium baseline 0.754) then HUNG — a rank's
+NCCL watchdog timed out after 480s on the first training `_log`.
+
+**Cause:** `all_reduce_mean_scalars` built a fixed-size tensor from each rank's
+numeric metric keys and `all_reduce`d it, assuming all ranks share the same keys.
+On medium (~77% accuracy), a group of 8 rollouts frequently *all* succeed -> zero
+reward variance -> degenerate -> skipped. A rank whose groups are all degenerate
+has **zero training pairs**, so its record lacks `ratio`/`clip_frac`/`pg_loss`/`kl`
+(only produced when `_grpo_microbatch_loss` runs). Mismatched key sets ->
+different tensor sizes -> `all_reduce` deadlock. Hard Sudoku never triggered it
+because groups there almost never all-succeed.
+
+**Fix:** `all_reduce_mean_scalars` now uses `all_gather_object` and averages each
+key only over the ranks that report it — robust to heterogeneous keys. The
+per-epoch optimizer-step count was already lockstep-safe (np.array_split always
+yields `optimizer_steps_per_epoch` chunks, empty ones still call the collective
+`_apply_optimizer_step`), and gradients are all-reduced before the non-finite
+check so all ranks skip/step identically. Verified with a 2-process test that
+deliberately gives the ranks different keys, plus the distributed smoke test.
+(Also fixed a stale distributed-test assertion left over from D18's
+inner_epochs 1->2 change.)
