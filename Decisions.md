@@ -612,3 +612,36 @@ check so all ranks skip/step identically. Verified with a 2-process test that
 deliberately gives the ranks different keys, plus the distributed smoke test.
 (Also fixed a stale distributed-test assertion left over from D18's
 inner_epochs 1->2 change.)
+
+## D29. Medium-difficulty result: GRPO is flat at the heuristic baseline (null)
+
+**Run:** stage1_medium, `num_fill=[28,54]`, 8 GPUs, 150 iterations, frozen
+greedy-σ order (Stage 1), `lr=1e-5`, `kl_beta=0.05`, eval every 10 iters (n=128).
+
+**Result — eval accuracy is statistically flat at ~0.773:**
+- iter 0 = 0.734, peak (iter 70) = 0.805, iter 150 = 0.797, run mean = **0.773**.
+- Per-eval sampling SE at n=128 is **±0.037**; the std of the 16 eval accuracies
+  across the whole run is only **0.018** — the eval points vary *less* than one
+  sampling SE, i.e. fully consistent with a constant. Fitted slope +0.023 over 150
+  iters is within noise. Mean(first 3 evals)=0.763, mean(last 3)=0.781 (+0.018, ~½ SE).
+- Matches the paper's medium predicted-order baseline (0.754) and our iter-0 (0.773).
+
+**Mechanism — the policy barely moved, and most groups carry no gradient:**
+- KL-to-reference drifted only to **0.002** over 150 iters; importance ratio pinned
+  at ~0.9999; PPO clip fraction ~0.
+- **`degenerate_group_frac` ≈ 0.55–0.60** — the majority of rollout groups produce
+  no advantage. At 77% accuracy all-success groups (P≈0.77⁸≈0.12) don't explain
+  this; the extra degeneracy is **low within-group reward variance**: with frozen
+  greedy order the only stochasticity is DDIM η noise, which rarely changes the
+  discrete outcome, so the 8 rollouts of a puzzle usually land on identical reward.
+  Train accuracy even drifts slightly down (slope −0.029), consistent with noise.
+
+**Conclusion:** Combined with the hard-Sudoku null (D25) and the careful Stage-2
+result (D24/D25), GRPO does **not** robustly beat the predicted-uncertainty
+heuristic on MNIST Sudoku in any regime tested. On hard the heuristic already
+captures ~96% of the order signal (remaining headroom needs search/backtracking
+that myopic σ-order can't express); on medium there is nominal headroom but
+frozen-order rollouts don't generate enough reward variance for GRPO to access it.
+The lever for a final positive-signal attempt would be **within-group variance**
+(a harder slice `num_fill=[20,40]` so groups split success/failure at ~50–60%
+accuracy), not learning rate. Default recommendation: consolidate the null result.
