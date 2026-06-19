@@ -127,6 +127,11 @@ rl:
     kl_beta_min: 1.e-3
     kl_beta_max: 1.0
     noise_aware_weighting: false
+    # false (order-only / frozen-mu, D30): reward updates only the sigma head via
+    # the order policy; mu is held on-distribution by the flow-matching anchor
+    # (folded into every step). Requires order_policy.enabled and
+    # flow_anchor_weight > 0. Skips the denoiser PPO surrogate and reference KL.
+    reward_on_denoiser: true
     adv_eps: 1.e-4
     skip_degenerate_groups: true
     grad_clip: 1.0
