@@ -97,7 +97,9 @@ def build_model() -> Wrapper:
     return Wrapper(cfg, d_data=1, image_shape=IMAGE_SHAPE)
 
 
-def build_trainer(tmp_dir, order_enabled: bool) -> GRPOTrainer:
+def build_trainer(
+    tmp_dir, order_enabled: bool, reward_on_denoiser: bool = True
+) -> GRPOTrainer:
     model = build_model()
     rl = RLCfg(
         pretrained_checkpoint="<unused>",
@@ -117,6 +119,7 @@ def build_trainer(tmp_dir, order_enabled: bool) -> GRPOTrainer:
             sigma_aux_weight=0.01,
             flow_anchor_weight=0.1,
             aux_batch_size=2,
+            reward_on_denoiser=reward_on_denoiser,
         ),
         order_policy=OrderPolicyCfg(enabled=order_enabled, temperature=0.1),
         eval=RLEvalCfg(every=1, num_samples=2, batch_size=2, num_fill=[0, 8], max_steps=24),
@@ -214,6 +217,37 @@ def check_update(trainer: GRPOTrainer) -> None:
     print(f"  update OK: {stats}")
 
 
+def check_order_only(trainer: GRPOTrainer) -> None:
+    """Order-only / frozen-mu mode (D30): the reward updates only the sigma
+    head via the order policy; mu is anchored by the flow-matching loss folded
+    into every optimizer step. No denoiser PPO surrogate -> no pg_loss/ratio/kl
+    keys; exactly optimizer_steps_per_epoch steps per epoch (no trailing aux)."""
+    roll = trainer.collect()
+    params_before = torch.cat([
+        p.detach().flatten().clone() for p in trainer.model.denoiser.parameters()
+    ])
+    stats = trainer.update(roll)
+    params_after = torch.cat([
+        p.detach().flatten().clone() for p in trainer.model.denoiser.parameters()
+    ])
+    upd = trainer.rl.update
+    assert stats["num_pairs"] > 0
+    assert not torch.equal(params_before, params_after), "update must change the policy"
+    assert "pg_loss" not in stats and "ratio" not in stats, \
+        "order-only mode must not run the denoiser PPO surrogate"
+    assert "order_loss" in stats and np.isfinite(stats["order_loss"]), \
+        "order-only mode must train the order policy"
+    assert np.isfinite(stats["flow_anchor"]) and np.isfinite(stats["sigma_aux"]), \
+        "flow-matching anchor must run every step to hold mu"
+    assert stats["optimizer_steps"] == upd.inner_epochs * upd.optimizer_steps_per_epoch, \
+        f"order-only step count off: {stats['optimizer_steps']}"
+    # only order-decision steps should be trained (mu steps carry no reward grad)
+    b_idx, s_idx = trainer._build_pairs(roll)
+    assert (roll.order_event_idx[s_idx, b_idx] >= 0).all(), \
+        "order-only _build_pairs must select only order-decision steps"
+    print(f"  order-only OK: {stats}")
+
+
 def check_adaptive_kl_and_best(trainer: GRPOTrainer) -> None:
     # adaptive KL: a tiny target should push kl_beta up; best-checkpoint saving
     trainer.rl.update.kl_target = 1.e-9       # measured KL >> target -> beta rises
@@ -306,6 +340,11 @@ def main() -> None:
             if not order_enabled:
                 check_eval(trainer)
                 check_adaptive_kl_and_best(trainer)
+
+    print("Order-only / frozen-mu mode (D30):")
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer = build_trainer(Path(tmp), order_enabled=True, reward_on_denoiser=False)
+        check_order_only(trainer)
     print("All smoke tests passed.")
 
 

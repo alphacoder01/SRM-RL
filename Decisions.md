@@ -645,3 +645,53 @@ frozen-order rollouts don't generate enough reward variance for GRPO to access i
 The lever for a final positive-signal attempt would be **within-group variance**
 (a harder slice `num_fill=[20,40]` so groups split success/failure at ~50–60%
 accuracy), not learning rate. Default recommendation: consolidate the null result.
+
+## D30. Order-only / frozen-μ RL: reward shapes σ, flow-matching pins μ
+
+**Motivation:** Every result so far (D24/D25 hard, D29 medium) shows RL on the
+denoiser mean μ does essentially nothing — `ratio≈1`, `clip_frac≈0`, μ barely
+moves — while the *only* lever that matters for this task is the **order**, which
+is defined entirely by the σ head. So this mode stops feeding reward into μ at
+all and routes the entire reward signal into σ, with μ held on-distribution by
+the standard flow-matching loss (the paper's training objective), exactly the
+"σ trained stop-grad on μ" recipe from the SRM paper.
+
+**Switch:** `rl.update.reward_on_denoiser=false` (requires
+`rl.order_policy.enabled=true` and `flow_anchor_weight>0`; asserted in
+`GRPOTrainer.__init__`).
+
+**What changes in the update (`src/rl/grpo.py`):**
+- The **denoiser PPO surrogate and the reference-KL forward are skipped
+  entirely** (`_grpo_microbatch_loss` gates them on `reward_on_denoiser`). μ
+  receives no reward gradient; the costly frozen-reference forward is avoided.
+- The reward reaches σ **only** through the order-policy gradient (unchanged
+  standardized-logit categorical surrogate). Because the order loss uses only
+  `sigma_theta`, μ is never in the reward path; the shared backbone is still
+  touched, which is why the FM anchor below is mandatory.
+- `_build_pairs` selects **only order-decision steps** in this mode (non-order
+  steps carry no σ/reward gradient), so no forward passes are wasted.
+- The flow-matching anchor (`_aux_loss`: FM MSE on real data + small σ-NLL with
+  `mean.detach()`) is folded into **every** optimizer step, not once per epoch.
+  Rationale: AdamW normalizes each step, so a single per-epoch FM step is
+  negligible against `optimizer_steps_per_epoch` order steps — what governs μ's
+  stability is the **FM:reward step ratio**, not `flow_anchor_weight`. This is
+  also literally the requested recipe ("compute the FM loss, then update σ").
+  Optimizer steps per epoch therefore become `optimizer_steps_per_epoch` (no
+  trailing aux step), vs `+1` in full mode; deterministic per mode, so multi-GPU
+  lockstep is preserved (verified by the distributed smoke test).
+
+**Why this is not just Stage 2 again:** Stage 2 also RL'd μ via the PPO surrogate
+and anchored it only weakly, so μ drifted and σ-learning fought a moving backbone
+plus the NLL. Here μ gets **zero** reward gradient and is actively pinned by FM at
+the σ-update cadence, so σ is the only thing reward moves. That removes the
+divergence confound and lets the order policy be trained longer / explore harder
+(higher `order_policy.temperature`, higher `lr`) without risking the generative
+model. It is the cleanest possible test of the one open question: *can a
+reward-shaped order beat the predicted-uncertainty order?*
+
+**Expectation (honest):** still attacking the same ceiling — on hard the
+heuristic already captures ~96% of the order signal — but the best shot is the
+medium / harder-variance slice where ordering headroom exists and groups split.
+Verified mechanically by `tests/rl_smoke_test.py::check_order_only` (no
+pg_loss/ratio/kl keys; order_loss + FM anchor every step; correct step count;
+pairs restricted to order steps).

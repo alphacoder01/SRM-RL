@@ -74,6 +74,14 @@ class UpdateCfg:
     kl_beta_min: float = 1.e-3
     kl_beta_max: float = 1.0
     noise_aware_weighting: bool = False
+    # When False (order-only / frozen-mu mode, cf. Decisions.md D30): the reward
+    # gradient updates ONLY the sigma head, through the order policy. The
+    # denoiser mean mu receives NO reward gradient; it is held on-distribution
+    # purely by the flow-matching anchor (standard SRM training loss on real
+    # data), with sigma trained stop-grad on mu exactly as in the paper. The
+    # reference-KL forward is skipped entirely. Requires order_policy.enabled
+    # and flow_anchor_weight > 0.
+    reward_on_denoiser: bool = True
     adv_eps: float = 1.e-4
     skip_degenerate_groups: bool = True
     grad_clip: float = 1.0

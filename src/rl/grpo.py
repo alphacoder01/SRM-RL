@@ -54,6 +54,16 @@ class GRPOTrainer:
         assert model.cfg.model.learn_sigma, \
             "Uncertainty-ordered sampling requires a model trained with learn_sigma"
         assert cfg.rl.rollout.alpha > 0
+        if not cfg.rl.update.reward_on_denoiser:
+            # Order-only / frozen-mu RL (Decisions.md D30): reward shapes only
+            # the sigma head via the order policy; mu is held on-distribution by
+            # the flow-matching anchor. Both must therefore be active.
+            assert cfg.rl.order_policy.enabled, \
+                "reward_on_denoiser=False trains only the sigma/order head; " \
+                "set rl.order_policy.enabled=true"
+            assert cfg.rl.update.flow_anchor_weight > 0, \
+                "reward_on_denoiser=False needs flow_anchor_weight > 0 to keep " \
+                "mu on-distribution (it is the only thing constraining mu)"
         self.cfg = cfg
         self.rl = cfg.rl
         self.model = model
@@ -300,12 +310,8 @@ class GRPOTrainer:
     ) -> Float[Tensor, ""]:
         upd, d_data = self.rl.update, self.model.d_data
         z_t = roll.z_seq[s_idx, b_idx].to(self.device, torch.float32)
-        z_next = roll.z_seq[s_idx + 1, b_idx].to(self.device, torch.float32)
         t = self._patch_to_pixel(roll.t_patch[s_idx, b_idx].to(self.device, torch.float32))
-        t_next = self._patch_to_pixel(roll.t_next_patch[s_idx, b_idx].to(self.device, torch.float32))
-        old_logp = roll.old_logp[s_idx, b_idx].to(self.device, torch.float32)
         advantage = roll.advantage[b_idx.to(roll.advantage.device)].to(self.device)
-        active = (t > t_next).logical_and(t_next > 0)
 
         with self._autocast():
             mean_theta, v_theta, sigma_theta = self.model.forward(
@@ -313,44 +319,55 @@ class GRPOTrainer:
             )
         mean_theta = mean_theta.float()
         sigma_theta = sigma_theta.float() if sigma_theta is not None else None
-        # Transition variance is frozen during RL (Decisions.md D4)
-        v_detached = v_theta.detach().float() if v_theta is not None else None
-        p_new = self.model.flow.conditional_p(
-            mean_theta, z_t.unsqueeze(1), t.unsqueeze(1), t_next.unsqueeze(1),
-            self.rl.rollout.alpha, self.rl.rollout.temperature, v_theta=v_detached
-        )
-        logp_map = -p_new.nll(z_next.unsqueeze(1)).squeeze(1)
-        logp_new = self._masked_mean(logp_map, active)
-        ratio = torch.exp(logp_new - old_logp)
-        clipped = ratio.clamp(1 - upd.clip_range, 1 + upd.clip_range)
-        surrogate = torch.minimum(ratio * advantage, clipped * advantage)
 
-        if upd.noise_aware_weighting:
-            with torch.no_grad():
-                weight = self._masked_mean(p_new.std.squeeze(1), active)
-                weight = weight / weight.mean().clamp(min=1.e-8)
-            surrogate = weight * surrogate
+        loss = torch.zeros((), device=self.device)
 
-        loss = -surrogate.mean()
-        stats["ratio"].append(ratio.detach().mean().item())
-        stats["clip_frac"].append(
-            ((ratio - 1).abs() > upd.clip_range).float().mean().item()
-        )
-        stats["pg_loss"].append(loss.item())
+        # Denoiser PPO surrogate: routes the reward gradient into mu. Disabled in
+        # order-only mode (Decisions.md D30), where mu is frozen w.r.t. reward and
+        # only the order/sigma head below is trained.
+        if upd.reward_on_denoiser:
+            z_next = roll.z_seq[s_idx + 1, b_idx].to(self.device, torch.float32)
+            t_next = self._patch_to_pixel(roll.t_next_patch[s_idx, b_idx].to(self.device, torch.float32))
+            old_logp = roll.old_logp[s_idx, b_idx].to(self.device, torch.float32)
+            active = (t > t_next).logical_and(t_next > 0)
+            # Transition variance is frozen during RL (Decisions.md D4)
+            v_detached = v_theta.detach().float() if v_theta is not None else None
+            p_new = self.model.flow.conditional_p(
+                mean_theta, z_t.unsqueeze(1), t.unsqueeze(1), t_next.unsqueeze(1),
+                self.rl.rollout.alpha, self.rl.rollout.temperature, v_theta=v_detached
+            )
+            logp_map = -p_new.nll(z_next.unsqueeze(1)).squeeze(1)
+            logp_new = self._masked_mean(logp_map, active)
+            ratio = torch.exp(logp_new - old_logp)
+            clipped = ratio.clamp(1 - upd.clip_range, 1 + upd.clip_range)
+            surrogate = torch.minimum(ratio * advantage, clipped * advantage)
 
-        if self.kl_beta > 0 or upd.kl_target is not None:
-            with torch.no_grad():
-                ref_mean, ref_v = self._predict(
-                    self.ref_denoiser, z_t.unsqueeze(1), t.unsqueeze(1)
-                )
-                p_ref = self.model.flow.conditional_p(
-                    ref_mean, z_t.unsqueeze(1), t.unsqueeze(1), t_next.unsqueeze(1),
-                    self.rl.rollout.alpha, self.rl.rollout.temperature, v_theta=ref_v
-                )
-            kl_map = p_new.kl(p_ref).squeeze(1)
-            kl = self._masked_mean(kl_map, active).mean()
-            loss = loss + self.kl_beta * kl
-            stats["kl"].append(kl.detach().item())
+            if upd.noise_aware_weighting:
+                with torch.no_grad():
+                    weight = self._masked_mean(p_new.std.squeeze(1), active)
+                    weight = weight / weight.mean().clamp(min=1.e-8)
+                surrogate = weight * surrogate
+
+            loss = -surrogate.mean()
+            stats["ratio"].append(ratio.detach().mean().item())
+            stats["clip_frac"].append(
+                ((ratio - 1).abs() > upd.clip_range).float().mean().item()
+            )
+            stats["pg_loss"].append(loss.item())
+
+            if self.kl_beta > 0 or upd.kl_target is not None:
+                with torch.no_grad():
+                    ref_mean, ref_v = self._predict(
+                        self.ref_denoiser, z_t.unsqueeze(1), t.unsqueeze(1)
+                    )
+                    p_ref = self.model.flow.conditional_p(
+                        ref_mean, z_t.unsqueeze(1), t.unsqueeze(1), t_next.unsqueeze(1),
+                        self.rl.rollout.alpha, self.rl.rollout.temperature, v_theta=ref_v
+                    )
+                kl_map = p_new.kl(p_ref).squeeze(1)
+                kl = self._masked_mean(kl_map, active).mean()
+                loss = loss + self.kl_beta * kl
+                stats["kl"].append(kl.detach().item())
 
         if self.rl.order_policy.enabled:
             event_ids = roll.order_event_idx[s_idx, b_idx]
@@ -461,15 +478,21 @@ class GRPOTrainer:
         upd = self.rl.update
         advantage = roll.advantage.cpu()
         b_list, s_list = [], []
+        # In order-only mode only the order-decision steps carry a reward
+        # gradient (into sigma), so train exclusively on them (D30).
+        order_only = not upd.reward_on_denoiser
         for b in range(roll.num_trajectories):
             if advantage[b].abs() < 1.e-12:
                 continue
-            steps = roll.active[:, b].nonzero(as_tuple=True)[0]
+            if order_only:
+                steps = (roll.order_event_idx[:, b] >= 0).nonzero(as_tuple=True)[0]
+            else:
+                steps = roll.active[:, b].nonzero(as_tuple=True)[0]
             if steps.numel() == 0:
                 continue
             num = ceil(upd.step_fraction * steps.numel())
             chosen = steps[torch.randperm(steps.numel())[:num]]
-            if upd.include_order_steps and self.rl.order_policy.enabled:
+            if upd.include_order_steps and self.rl.order_policy.enabled and not order_only:
                 order_steps = (roll.order_event_idx[:, b] >= 0).nonzero(as_tuple=True)[0]
                 chosen = torch.unique(torch.cat([chosen, order_steps]))
             b_list.append(torch.full_like(chosen, b))
@@ -506,28 +529,41 @@ class GRPOTrainer:
             pair_chunks = np.array_split(
                 np.arange(b_idx.numel()), upd.optimizer_steps_per_epoch
             )
+            # Order-only mode (D30): mu gets no reward gradient, so the
+            # flow-matching anchor must hold it in place at the SAME cadence the
+            # order policy perturbs the shared backbone. A single per-epoch aux
+            # step is too weak — AdamW normalizes every step, so what matters is
+            # the FM:reward step ratio, not the FM weight — so we fold the anchor
+            # into each optimizer step (this is also the "compute FM loss, then
+            # update sigma" recipe literally).
+            anchor_each_step = not upd.reward_on_denoiser
             self.optimizer.zero_grad(set_to_none=True)
             for pchunk in pair_chunks:
                 n = len(pchunk)
-                if n == 0:
-                    self._apply_optimizer_step()       # keep ranks in lockstep
-                    num_optimizer_steps += 1
-                    continue
                 for start in range(0, n, upd.update_batch_size):
                     sub = torch.from_numpy(pchunk[start : start + upd.update_batch_size])
                     loss = self._grpo_microbatch_loss(
                         roll, b_idx[sub], s_idx[sub], stats
                     )
                     # weight by the microbatch's pair fraction so the chunk's
-                    # accumulated gradient is the exact grand mean over n pairs
-                    (loss * len(sub) / n).backward()
+                    # accumulated gradient is the exact grand mean over n pairs.
+                    # A microbatch with no reward gradient (e.g. order-only mode
+                    # with no order event in this slice) yields a constant zero
+                    # with no grad_fn; skip its backward.
+                    if loss.requires_grad:
+                        (loss * len(sub) / n).backward()
+                if anchor_each_step:
+                    aux = self._aux_loss(stats)
+                    if aux is not None:
+                        aux.backward()
                 self._apply_optimizer_step()
                 num_optimizer_steps += 1
-            aux = self._aux_loss(stats)
-            if aux is not None:
-                aux.backward()
-                self._apply_optimizer_step()
-                num_optimizer_steps += 1
+            if not anchor_each_step:
+                aux = self._aux_loss(stats)
+                if aux is not None:
+                    aux.backward()
+                    self._apply_optimizer_step()
+                    num_optimizer_steps += 1
         result = {k: float(np.mean(v)) for k, v in stats.items() if v}
         result["num_pairs"] = num_pairs
         result["optimizer_steps"] = num_optimizer_steps
