@@ -1,6 +1,6 @@
 # Newton's Laws of Motion: a narrated video lesson for Grade 12
 
-An animated, narrated physics lesson (about 33 minutes) that teaches Newton's three laws of motion
+An animated, narrated physics lesson (33 minutes) that teaches Newton's three laws of motion
 at grade-12 depth (CBSE class 11–12, AP Physics 1/C, A-level, IB). It builds the ideas from observation,
 states each law precisely, works through quantitative examples with free-body diagrams, clears up
 the classic misconceptions, and ends with a quiz.
@@ -19,6 +19,20 @@ Also in `output/`:
 ## Chapters
 
 <!-- CHAPTERS:START -->
+| start | chapter |
+|---|---|
+| 0:00 | Introduction |
+| 1:11 | 1. What keeps things moving? |
+| 3:34 | 2. Newton's first law |
+| 7:55 | 3. Newton's second law |
+| 12:04 | 4. Impulse |
+| 13:52 | 5. Newton's third law |
+| 19:18 | 6. Conservation of momentum |
+| 21:18 | 7. Free-body diagrams; Example 1 |
+| 24:13 | Example 2: apparent weight in a lift |
+| 26:24 | Example 3: connected blocks |
+| 27:58 | 8. Summary and common mistakes |
+| 29:56 | Quiz and wrap-up |
 <!-- CHAPTERS:END -->
 
 ## What the lesson covers
