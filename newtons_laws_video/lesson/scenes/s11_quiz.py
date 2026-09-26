@@ -183,19 +183,21 @@ class S11_Quiz(VoiceScene):
         ab = boxed(VGroup(e3, e4), GOOD)
         chk = mtxt(f"check: 29.4 N &lt; {hl('T = 36.75 N', C_TENSION)} &lt; 49 N", 26).move_to(v(2.9, -3.3))
         with self.say("Here's the solution. The 5 kilogram mass moves down, and the 3 kilogram mass moves up, with "
-                      "the same acceleration, a.") as c:
+                      "accelerations of the same size.") as c:
             self.play(FadeOut(q), run_time=0.4)
             self.play(clock.animate.set_value(T_RUN), run_time=T_RUN / 0.5, rate_func=linear)
             self.play(FadeIn(fb1[:2]), FadeIn(fb2[:2]), GrowArrow(up1), GrowArrow(dn2), run_time=0.8)
-        with self.say("For the 5 kilogram mass, taking down as positive: 5 g minus T equals 5 a. For the 3 kilogram "
-                      "mass, taking up as positive: T minus 3 g equals 3 a.") as c:
+        with self.say("For the 5 kilogram mass, taking down as positive: 5 g, minus T, equals 5 times the "
+                      "acceleration. For the 3 kilogram mass, taking up as positive: T, minus 3 g, equals 3 times "
+                      "the acceleration.") as c:
             self.play(GrowArrow(fb2[3][0]), FadeIn(fb2[3][1]), GrowArrow(fb2[2][0]), FadeIn(fb2[2][1]), run_time=0.8)
             self.play(Write(e1), run_time=1.2)
             self.at_sentence(c, 1)
             self.play(GrowArrow(fb1[3][0]), FadeIn(fb1[3][1]), GrowArrow(fb1[2][0]), FadeIn(fb1[2][1]), run_time=0.8)
             self.play(Write(e2), run_time=1.2)
-        with self.say("Add the two equations, and the tension cancels: 2 g equals 8 a. So a equals g over 4, which "
-                      "is 2.45 metres per second squared. Then T equals 3 times, g plus a, which is 3 times 12.25: "
+        with self.say("Add the two equations, and the tension cancels: 2 g equals 8 times the acceleration. So the "
+                      "acceleration is g over 4, which is 2.45 metres per second squared. Then T equals 3 times, g "
+                      "plus the acceleration, which is 3 times 12.25: "
                       "36.75 newtons.") as c:
             self.play(Write(e3), run_time=1.6)
             self.at_sentence(c, 2)

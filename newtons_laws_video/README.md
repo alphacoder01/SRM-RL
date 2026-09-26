@@ -6,7 +6,7 @@ states each law precisely, works through quantitative examples with free-body di
 the classic misconceptions, and ends with a quiz.
 
 **Watch:** [`output/newtons_laws_of_motion.mp4`](output/newtons_laws_of_motion.mp4)
-(1920×1080, 30 fps, H.264 + AAC, English subtitles on by default, chapter markers)
+(1920×1080, 30 fps, H.264 video + mono AAC narration, English subtitles on by default, chapter markers)
 
 Also in `output/`:
 
@@ -56,8 +56,10 @@ Also in `output/`:
 * **Idealisations are stated out loud:** frictionless surfaces, light strings, no air resistance,
   g = 9.8 m/s².
 * **Every narrated sentence was proofread for physics accuracy.** Frames were reviewed with contact
-  sheets ([`tools/contact_sheet.py`](tools/contact_sheet.py)), and the narration–caption sync of the
-  final file was measured ([`tools/check_sync.py`](tools/check_sync.py)).
+  sheets ([`tools/contact_sheet.py`](tools/contact_sheet.py), [`tools/review_sheets.py`](tools/review_sheets.py)).
+  The sync between narration and captions in the final file was measured
+  ([`tools/check_sync.py`](tools/check_sync.py)). Every sentence of the synthetic voice was also run through
+  an offline speech recogniser to catch mispronounced words ([`tools/check_voice.py`](tools/check_voice.py)).
 
 ## About the narration voice
 
@@ -84,13 +86,15 @@ pip install -r requirements.txt
 
 python verify_physics.py          # check the numbers
 python build.py --quality low     # quick 480p15 preview (a few minutes)
-python build.py                   # final 1080p30 render + assembly (tens of minutes on 4 cores)
-python build.py --scenes S05_ThirdLaw   # re-render one chapter, then re-assemble
+python build.py --crf 20          # final 1080p30 render + assembly, as published (tens of minutes on 4 cores)
+python build.py --scenes S05_ThirdLaw --crf 20   # re-render one chapter, then re-assemble
 ```
 
 The build renders each chapter with [Manim Community](https://www.manim.community/) 0.21. It then joins
-the video losslessly, normalises the audio to −16 LUFS (EBU R128, two-pass), and muxes the subtitles and
-chapter markers.
+the chapters with exact per-chapter audio alignment, and with `--crf` re-encodes the video once with
+x264 (tuned for animation), which is visually identical and about half the size. It normalises the
+narration to −16 LUFS (EBU R128, two-pass, −3 dBTP peak ceiling) and muxes the subtitles and chapter
+markers.
 
 ## Project layout
 
@@ -105,7 +109,9 @@ newtons_laws_video/
 │   ├── common.py         chapter cards
 │   └── scenes/           one file per chapter (s00_intro.py ... s11_quiz.py)
 ├── tools/
-│   ├── contact_sheet.py  QA: frames at the end of every narrated sentence
-│   └── check_sync.py     QA: speech onsets vs caption times; loudness report
+│   ├── contact_sheet.py  QA: frames at the end of every narrated sentence of a scene
+│   ├── review_sheets.py  QA: frames at the end of every narration block of the final video
+│   ├── check_sync.py     QA: speech onsets vs caption times; loudness report
+│   └── check_voice.py    QA: offline speech recognition of every narrated sentence
 └── output/               the finished video, subtitles, transcript, chapter list
 ```

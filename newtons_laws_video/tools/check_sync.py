@@ -46,8 +46,10 @@ for t in starts:
 print(f"sentence onsets checked: {len(starts)}; out of sync: {len(bad)}")
 for b in bad[:20]:
     print("  suspicious onset at", b)
-ebur = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(video), "-map", "0:a", "-af", "ebur128=peak=true",
-                       "-f", "null", "-"], capture_output=True, text=True).stderr
+# The narration is a mono track; measure it as played on stereo speakers (dual mono), per EBU R128 practice.
+ebur = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(video), "-map", "0:a", "-af",
+                       "pan=stereo|c0=c0|c1=c0,ebur128=peak=true", "-f", "null", "-"],
+                      capture_output=True, text=True).stderr
 summary = ebur[ebur.rfind("Summary:"):]
-print(" ".join(summary.split()))
+print("loudness (dual-mono playback):", " ".join(summary.split()))
 sys.exit(1 if bad else 0)

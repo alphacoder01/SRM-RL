@@ -82,8 +82,8 @@ class S08_Lift(VoiceScene):
         self.fbd_t = fbd_t
         with self.say("The free-body diagram of the student has just two forces: the normal force N from the "
                       "scale, pointing up, and the weight, m g, which is 60 times 9.8, or 588 newtons, pointing "
-                      "down. Taking up as positive, the second law gives N minus m g equals m a. So N equals m "
-                      "times, g plus a.") as c:
+                      "down. Taking up as positive, the second law says: N minus m g equals the mass times the "
+                      "acceleration. So N equals the mass times, g plus the acceleration.") as c:
             self.play(FadeOut(self.prob), run_time=0.5)
             self.play(FadeIn(fbd_t), FadeIn(self.fbd_dot), run_time=0.5)
             self.add(self.fN)
@@ -118,7 +118,7 @@ class S08_Lift(VoiceScene):
 
         acc_arrow = always_redraw(lambda: VGroup())
         texts = [
-            "At constant velocity, a is zero, so N is 588 newtons. The scale shows your true weight, even "
+            "At constant velocity, the acceleration is zero, so N is 588 newtons. The scale shows your true weight, even "
             "though you are moving.",
             "Accelerating upward at 2 metres per second squared, N equals 60 times 11.8, which is 708 newtons. "
             "You feel heavier.",

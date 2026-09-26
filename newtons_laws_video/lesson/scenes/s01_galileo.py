@@ -138,8 +138,8 @@ class S01_Galileo(VoiceScene):
             self.play(FadeIn(mobs), FadeIn(key), run_time=1.0)
             self.at_sentence(c, 1, 1.0)
             self.play(clock.animate.set_value(6.0), run_time=6.0, rate_func=linear)
-        self.narrate("On ice, the friction is so weak that the block is still sliding when it reaches "
-                     "the end of the track. So what would happen with no friction at all?")
+        self.narrate("On ice, the friction is so weak that the block is still sliding, long after the "
+                     "other two have stopped. So what would happen with no friction at all?")
         for m in movers:
             m.clear_updaters()
         self.play(FadeOut(mobs), FadeOut(key), run_time=0.6)

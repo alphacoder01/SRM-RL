@@ -246,7 +246,7 @@ class S03_SecondLaw(VoiceScene):
 
         bl = ball(0.18, "#F59E0B", stripe=False).move_to(pos(0))
         bl.add_updater(lambda m: m.move_to(pos(clock.get_value())))
-        k = 0.28  # units per (m/s) for velocity arrows
+        k = 0.2  # units per (m/s) for velocity arrows
 
         def arrows():
             t = clock.get_value()
@@ -255,7 +255,8 @@ class S03_SecondLaw(VoiceScene):
             hx = arrow(p, p + RIGHT * k * vx, C_VEL, stroke=5, tip=0.18)
             hy = arrow(p, p + UP * k * vy, C_VEL, stroke=5, tip=0.18)
             w = arrow(p + LEFT * 0.16, p + LEFT * 0.16 + DOWN * 0.9, C_WEIGHT, stroke=5, tip=0.18)
-            return VGroup(w, hx, hy)
+            # once the ball has landed it is no longer a projectile: hide the arrows
+            return shown(VGroup(w, hx, hy), t < T - 1e-6)
 
         arr = always_redraw(arrows)
         ghosts = VGroup(*[ball(0.18, "#F59E0B", stripe=False).move_to(pos(t)).set_opacity(0.3)
@@ -271,7 +272,8 @@ class S03_SecondLaw(VoiceScene):
         n_x = mtxt(f"horizontal: no force, so {hl('v<sub>x</sub> stays constant', C_VEL)}", 26)
         n_y = mtxt(f"vertical: weight gives {hl('a<sub>y</sub> = −g', C_ACC)}", 26)
         notes = VGroup(n_x, n_y).arrange(DOWN, aligned_edge=LEFT, buff=0.15).move_to(v(-2.6, 2.05))
-        slow = txt("shown at 0.4× speed; ghost images every 0.1 s", 22, MUTED).to_corner(DR, buff=0.3)
+        slow = txt("0.4× speed · ghost images every 0.1 s", 22, MUTED)
+        slow.next_to(keys, DOWN, buff=0.25).align_to(keys, RIGHT)
         with self.say("Force and acceleration are vectors, so the second law holds separately along each "
                       "axis: the sum of the x components of the forces equals m times the x component of "
                       "the acceleration, and the same for y. A thrown ball shows this beautifully.") as c:

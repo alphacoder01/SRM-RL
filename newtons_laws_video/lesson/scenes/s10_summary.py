@@ -72,8 +72,8 @@ class S10_Summary(VoiceScene):
         rows = VGroup()
         for i, (m, f) in enumerate(myths):
             y = 1.95 - 1.28 * i
-            mx = VGroup(cross_mark(0.26), txt(m, 25, TEXT)).arrange(RIGHT, buff=0.25)
-            fx = VGroup(check_mark(0.3), txt(f, 23, GOOD)).arrange(RIGHT, buff=0.25)
+            mx = VGroup(cross_mark(0.26), mtxt(m, 25, TEXT)).arrange(RIGHT, buff=0.25)
+            fx = VGroup(check_mark(0.3), mtxt(f, 23, GOOD)).arrange(RIGHT, buff=0.25)
             pair = VGroup(mx, fx).arrange(DOWN, aligned_edge=LEFT, buff=0.14)
             if pair.width > 13.2:
                 pair.scale_to_fit_width(13.2)

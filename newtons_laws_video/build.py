@@ -77,10 +77,11 @@ def probe_frames(video: Path) -> tuple[int, float]:
 
 
 # ---------------------------------------------------------------------------------- subtitles
-def split_for_subtitles(text: str, max_chars: int = 84) -> list[str]:
-    """Split a sentence into subtitle-sized pieces, preferring clause boundaries near the middle."""
+def split_for_subtitles(text: str, max_chars: int = 84, line_len: int = 42) -> list[str]:
+    """Split a sentence into subtitle-sized pieces (at most two lines of ``line_len`` characters),
+    preferring clause boundaries near the middle."""
     text = " ".join(text.split())
-    if len(text) <= max_chars:
+    if len(text) <= max_chars and all(len(l) <= line_len for l in wrap2(text, line_len).split("\n")):
         return [text]
     mid = len(text) / 2
     cands = [m.end() for m in re.finditer(r"[,;:]\s|\s[—–-]\s", text)]
@@ -121,7 +122,7 @@ def fmt_clock(t: float) -> str:
 
 
 # ---------------------------------------------------------------------------------- assembly
-def assemble(quality: str):
+def assemble(quality: str, crf: int | None = None):
     _, fps, folder = QUALITY[quality]
     work = BUILD / "assemble"
     work.mkdir(parents=True, exist_ok=True)
@@ -148,6 +149,14 @@ def assemble(quality: str):
     video_only = work / "video.mp4"
     run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing), "-map", "0:v:0",
          "-c", "copy", str(video_only)])
+    if crf is not None:
+        # One continuous re-encode: 10 s GOPs instead of a keyframe per animation, a slower preset and
+        # x264's animation tuning shrink the file a lot for flat vector graphics.
+        packed = work / "video_x264.mp4"
+        run(["ffmpeg", "-v", "error", "-y", "-i", str(video_only), "-c:v", "libx264", "-preset", "slow",
+             "-tune", "animation", "-crf", str(crf), "-g", str(10 * fps), "-pix_fmt", "yuv420p",
+             "-profile:v", "high", "-movflags", "+faststart", str(packed)])
+        video_only = packed
 
     # audio: each scene's track padded/trimmed to its exact video length, then joined
     parts = []
@@ -162,7 +171,7 @@ def assemble(quality: str):
          "-c", "copy", str(joined)])
 
     # two-pass EBU R128 loudness normalisation to -16 LUFS (speech for online video)
-    target = "I=-16:TP=-1.5:LRA=11"
+    target = "I=-16:TP=-3:LRA=11"  # AAC adds ~1.5 dB of overshoot
     meas = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(joined), "-af",
                            f"loudnorm={target}:print_format=json", "-f", "null", "-"],
                           capture_output=True, text=True).stderr
@@ -201,7 +210,9 @@ def assemble(quality: str):
     final = OUT / "newtons_laws_of_motion.mp4"
     run(["ffmpeg", "-v", "error", "-y", "-i", str(video_only), "-i", str(norm), "-i", str(srt),
          "-i", str(meta), "-map", "0:v", "-map", "1:a", "-map", "2:s", "-map_metadata", "3",
-         "-map_chapters", "3", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-c:s", "mov_text",
+         "-map_chapters", "3", "-c:v", "copy",
+         # mono narration: explicit 0.5/0.5 downmix (ffmpeg's automatic one adds +3 dB for float encoders)
+         "-filter:a", "pan=mono|c0=0.5*c0+0.5*c1", "-c:a", "aac", "-b:a", "80k", "-c:s", "mov_text",
          "-metadata:s:a:0", "language=eng", "-metadata:s:s:0", "language=eng",
          "-metadata:s:s:0", "title=English", "-disposition:s:0", "default", "-movflags", "+faststart",
          str(final)])
@@ -227,6 +238,7 @@ def main():
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2)))
     ap.add_argument("--scenes", nargs="*", help="only (re)render these scene classes")
     ap.add_argument("--assemble-only", action="store_true")
+    ap.add_argument("--crf", type=int, help="re-encode the joined video with x264 at this CRF (smaller file)")
     args = ap.parse_args()
     if not args.assemble_only:
         todo = [s for s in SCENES if not args.scenes or s[1] in args.scenes]
@@ -237,7 +249,7 @@ def main():
         with ThreadPoolExecutor(max_workers=args.jobs) as pool:
             list(pool.map(lambda s: render_scene(s[0], s[1], args.quality), todo))
     print("assembling")
-    assemble(args.quality)
+    assemble(args.quality, args.crf)
 
 
 if __name__ == "__main__":

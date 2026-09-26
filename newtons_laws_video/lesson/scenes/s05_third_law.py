@@ -210,7 +210,7 @@ class S05_ThirdLaw(VoiceScene):
             self.play(clock.animate.set_value(t_push), run_time=t_push / 0.1, rate_func=linear)
             self.add(vels)
             self.play(FadeOut(tag), FadeIn(tag2), run_time=0.3)
-            self.play(clock.animate.set_value(t_push + 1.6), run_time=1.6, rate_func=linear)
+            self.play(clock.animate.set_value(t_push + 1.2), run_time=1.2, rate_func=linear)
         with self.say("But equal forces don't mean equal effects. With a 750 newton push, Anna accelerates at "
                       "15 metres per second squared, while Ben, who is heavier, accelerates at only 10. So "
                       "after the push, which lasts a fifth of a second, Anna glides away at 3 metres per "
@@ -220,7 +220,7 @@ class S05_ThirdLaw(VoiceScene):
             self.wait(0.3)
             self.play(FadeIn(acc), run_time=0.8)
             self.play(clock.animate.set_value(t_push), run_time=t_push / 0.1, rate_func=linear)
-            self.play(clock.animate.set_value(t_push + 1.6), run_time=1.6, rate_func=linear)
+            self.play(clock.animate.set_value(t_push + 1.2), run_time=1.2, rate_func=linear)
             self.at_sentence(c, 2)
             self.play(FadeIn(speeds), run_time=0.8)
         for m in (figs, pushes, vels):

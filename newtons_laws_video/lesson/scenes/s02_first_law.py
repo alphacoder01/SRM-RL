@@ -207,8 +207,9 @@ class S02_FirstLaw(VoiceScene):
         with self.say("A car cruising at a steady speed on a straight, level road is the same. The road "
                       "pushes the car forward, through friction on its driven wheels, while air "
                       "resistance and rolling resistance push it backward. When these forces balance, "
-                      "the net force is zero, and the velocity stays constant. The engine is not needed "
-                      "to keep the car moving. It is needed to cancel the resistive forces.") as c:
+                      "the net force is zero, and the velocity stays constant. With no resistive forces at "
+                      "all, the car would cruise on with no engine force. The engine is needed only to cancel "
+                      "the resistive forces.") as c:
             self.play(FadeIn(road), FadeIn(dashes), FadeIn(posts), FadeIn(car), FadeIn(camnote), run_time=0.6)
             self.play(GrowArrow(vel), FadeIn(keys[2]), run_time=0.5)
             self.at_sentence(c, 1)
@@ -256,7 +257,7 @@ class S02_FirstLaw(VoiceScene):
                                                           cc.get_top() + UP * 0.25 + RIGHT * 0.9 * vf, C_VEL, stroke=5),
                                                     clock.get_value() >= t_push)
                                               for cc, vf in ((c1, v1), (c2, v2))]))
-        with self.say("Because of this, the first law is also called the law of inertia. Inertia is the "
+        with self.say("The first law is also called the law of inertia. Inertia is the "
                       "tendency of a body to resist any change in its motion. And mass is the measure of "
                       "inertia. Give an empty trolley and a heavily loaded one exactly the same short "
                       "push. The empty one shoots off, while the loaded one barely moves. The more mass "

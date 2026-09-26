@@ -29,6 +29,7 @@ def main():
     ap.add_argument("--cols", type=int, default=3)
     ap.add_argument("--per-sheet", type=int, default=6)
     ap.add_argument("--times", help="comma-separated times instead of caption ends")
+    ap.add_argument("--scale", type=float, default=1.0, help="resize frames (e.g. 0.5 for 1080p renders)")
     args = ap.parse_args()
 
     video = Path(args.video) if args.video else find_video(args.scene)
@@ -54,6 +55,8 @@ def main():
     for s in range(0, len(frames), args.per_sheet):
         chunk = frames[s:s + args.per_sheet]
         ims = [Image.open(f) for f, _, _ in chunk]
+        if args.scale != 1.0:
+            ims = [im.resize((int(im.width * args.scale), int(im.height * args.scale)), Image.LANCZOS) for im in ims]
         w, h = ims[0].size
         cap_h = 46
         rows = (len(ims) + args.cols - 1) // args.cols
