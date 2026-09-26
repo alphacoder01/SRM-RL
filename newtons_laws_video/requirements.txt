@@ -1,0 +1,5 @@
+manim==0.21.0
+numpy
+soundfile
+# optional, only for tools/voice QA (offline speech recognition)
+pocketsphinx

@@ -1,0 +1,3 @@
+# render caches, intermediate files, synthesised speech
+build/
+__pycache__/
